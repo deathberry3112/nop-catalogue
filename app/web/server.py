@@ -24,9 +24,11 @@ it stands.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -42,6 +44,31 @@ log = logging.getLogger("web.server")
 STATIC = Path(__file__).parent / "static"
 
 api = FastAPI(title="nopCommerce product upload", version="1.0.0")
+
+#: Origins allowed to call this API, comma-separated, or "*" for any.
+#:
+#: The shipped topology has NO cross-origin traffic: one container serves the
+#: console and the API, so the browser only ever sees one origin and this
+#: middleware never fires. It is env-driven rather than absent so that putting
+#: a CDN or a separate front end in front later is a variable, not a patch —
+#: and so the allowed origins are never a literal in this file.
+#:
+#: allow_credentials is deliberately NOT set: the admin password travels in the
+#: request body (see StartRun), never in a cookie, so there is nothing for it
+#: to enable — and "*" with credentials is rejected by browsers anyway.
+CORS_ALLOW_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("CORS_ALLOW_ORIGINS", "*").split(",")
+    if origin.strip()
+]
+
+if CORS_ALLOW_ORIGINS:
+    api.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ALLOW_ORIGINS,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +112,19 @@ def script() -> FileResponse:
 # ---------------------------------------------------------------------------
 # health — what is actually wired up
 # ---------------------------------------------------------------------------
+
+@api.get("/api/ping")
+def ping() -> dict:
+    """Liveness only: is this process up and serving? No I/O, no dependencies.
+
+    Separate from /api/health because health() calls store.healthy(), which
+    makes a live Supabase round-trip. A platform healthcheck pointed at that
+    would let a slow or unreachable telemetry backend fail a deploy — the same
+    inversion this codebase refuses everywhere else: telemetry is never allowed
+    to break the thing it observes.
+    """
+    return {"ok": True}
+
 
 @api.get("/api/health")
 def health() -> dict:
@@ -298,7 +338,13 @@ def main() -> None:
     if not settings().llm_enabled:
         log.warning("OPENAI_API_KEY not set — colour tier 3 is off")
 
-    uvicorn.run(api, host="127.0.0.1", port=8000, log_level="info")
+    # Defaults are the local ones, so `python -m app.web.server` behaves
+    # exactly as it always has. A container sets HOST=0.0.0.0 and the platform
+    # injects PORT — the same command, one environment apart.
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", "8000"))
+    log.info("serving on http://%s:%d", host, port)
+    uvicorn.run(api, host=host, port=port, log_level="info")
 
 
 if __name__ == "__main__":
