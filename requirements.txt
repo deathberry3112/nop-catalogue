@@ -1,4 +1,8 @@
-playwright>=1.40
+# Pinned, and it must stay in step with the FROM tag in the Dockerfile:
+# playwright resolves its browsers by version, so an image whose preinstalled
+# Chromium was built for a different release fails at run time with
+# "Executable doesn't exist", not at build time. Bump both together.
+playwright==1.61.0
 openpyxl>=3.1
 
 # web layer
