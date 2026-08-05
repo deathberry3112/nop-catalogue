@@ -24,8 +24,11 @@ from typing import Any
 
 import main
 import xlsxCreator
+from app import rollback
 from app.config import ROOT, settings
 from app.store import RunStore
+from main import ConfigError
+from pages.landing_page import LandingPage
 
 log = logging.getLogger("web.runs")
 
@@ -157,6 +160,79 @@ class RunManager:
     def report_path(self, run_id: str) -> Path | None:
         path = REPORT_DIR / f"{run_id}.xlsx"
         return path if path.exists() else None
+
+    # --- rollback --------------------------------------------------------
+    #
+    # Deleting is deliberately NOT modelled as a run: it must not appear in the
+    # run list, must not be resumable, and must never be something a stray
+    # retry can repeat. It is one short synchronous operation with a report.
+
+    def rollback_plan(self, run_id: str) -> dict:
+        """What a rollback would delete. Computed from the store every time —
+        never cached, so the dialog cannot show a stale set."""
+        return rollback.build_plan(run_id).as_dict()
+
+    def rollback(self, run_id: str, confirm_skus: list[str],
+                 *, base_url: str = "", email: str = "",
+                 password: str = "") -> dict:
+        """Delete this run's products, having re-derived the set server-side.
+
+        `confirm_skus` is what the operator was shown. It is not the input to
+        the deletion — the plan is recomputed here and is the only thing acted
+        on — it is a check that the two agree. If the catalogue moved between
+        the dialog opening and the button being pressed, that mismatch stops
+        the operation instead of silently deleting a set nobody approved.
+        """
+        plan = rollback.build_plan(run_id)
+        if plan.blocked:
+            raise ConfigError(plan.blocked)
+
+        if sorted(confirm_skus) != plan.skus:
+            raise ConfigError(
+                "the confirmation does not match what would be deleted now — "
+                f"you approved {sorted(confirm_skus)}, the current plan is "
+                f"{plan.skus}. Nothing was deleted; re-open the dialog and "
+                f"check it again.")
+
+        config = settings()
+        target = base_url or plan.base_url or config.admin_base_url
+        if plan.base_url and target.rstrip("/") != plan.base_url.rstrip("/"):
+            raise ConfigError(
+                f"this run targeted {plan.base_url}; refusing to delete "
+                f"against {target}")
+
+        credentials = main.Credentials(
+            base_url=target, email=email or config.admin_email,
+            password=password or config.admin_password).require()
+
+        options = main.RunOptions.from_env(commit=True, output_xlsx=None)
+        store = RunStore(run_id, remote=True)   # for release_product only
+
+        if not _semaphore.acquire(timeout=600):
+            raise ConfigError("timed out waiting for a free browser slot")
+        try:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(**main.build_launch_kwargs(options))
+                context = browser.new_context(
+                    **main.build_context_kwargs(credentials.base_url, options))
+                page = context.new_page()
+                try:
+                    LandingPage(page, url=credentials.base_url).login(
+                        credentials.email, credentials.password)
+                    report = rollback.execute(page, plan, store=store,
+                                              base_url=target)
+                finally:
+                    context.close()
+                    browser.close()
+        finally:
+            _semaphore.release()
+
+        live = self.get(run_id)
+        if live:
+            live.event(f"rolled back: {len(report['deleted'])} product(s) deleted",
+                       level="warn", data=report)
+        return report
 
 
 MANAGER = RunManager()

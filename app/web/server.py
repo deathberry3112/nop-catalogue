@@ -189,6 +189,42 @@ def get_run(run_id: str) -> dict:
     return snapshot
 
 
+class Rollback(BaseModel):
+    """Approval for a deletion, echoing back exactly what was shown.
+
+    `skus` is a check, not an instruction: the server recomputes the set from
+    the store and refuses if the two disagree. Nothing a caller sends here can
+    widen the scope — an unknown SKU makes the lists differ and stops the
+    operation, it does not get deleted.
+    """
+
+    skus: list[str]
+    base_url: str = ""
+    email: str = ""
+    password: str = ""
+
+
+@api.get("/api/runs/{run_id}/rollback")
+def rollback_plan(run_id: str) -> dict:
+    """What deleting this run's products would delete. Changes nothing."""
+    return MANAGER.rollback_plan(run_id)
+
+
+@api.post("/api/runs/{run_id}/rollback")
+def rollback_run(run_id: str, payload: Rollback) -> dict:
+    """DELETE the products this run created. Irreversible.
+
+    Synchronous on purpose. It is short, it must not be retried automatically,
+    and the caller has to see the outcome — a fire-and-forget delete whose
+    report you fetch later is the wrong shape for this.
+    """
+    try:
+        return MANAGER.rollback(run_id, payload.skus, base_url=payload.base_url,
+                                email=payload.email, password=payload.password)
+    except ConfigError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @api.get("/api/runs/{run_id}/report")
 def get_report(run_id: str) -> FileResponse:
     path = MANAGER.report_path(run_id)

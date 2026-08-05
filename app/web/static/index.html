@@ -204,6 +204,7 @@
           <span class="pill" id="r-mode"></span>
           <span class="pill" id="r-status"></span>
           <a class="btn ghost" id="btn-report" href="#" hidden>Download report</a>
+          <button class="btn danger" id="btn-rollback" hidden>Delete created products</button>
         </div>
       </div>
 
@@ -284,6 +285,49 @@
     <div class="modal-actions">
       <button class="btn ghost" id="m-cancel">Cancel</button>
       <button class="btn danger" id="m-confirm">Yes, create them</button>
+    </div>
+  </div>
+</div>
+
+<!-- rollback confirmation. Lists every product by name before anything is
+     deleted, and will not arm the button until DELETE is typed. -->
+<div class="modal-backdrop" id="rb-modal" hidden>
+  <div class="modal wide">
+    <h3>Delete the products this run created?</h3>
+
+    <div class="alert error">
+      <strong>This cannot be undone.</strong> These products are removed from
+      the live catalogue at <span class="mono" id="rb-target"></span>, along
+      with their attributes and combinations.
+    </div>
+
+    <p id="rb-intro" class="muted"></p>
+
+    <div class="rb-list" id="rb-list"></div>
+
+    <div class="alert warn" id="rb-excluded" hidden></div>
+    <div class="alert error" id="rb-blocked" hidden></div>
+
+    <label class="field" id="rb-confirm-field">
+      <span class="field-label">Type <strong>DELETE</strong> to confirm</span>
+      <input id="rb-confirm" type="text" autocomplete="off" spellcheck="false"
+             placeholder="DELETE">
+    </label>
+
+    <div class="modal-actions">
+      <button class="btn ghost" id="rb-cancel">Cancel</button>
+      <button class="btn danger" id="rb-go" disabled>Delete them</button>
+    </div>
+  </div>
+</div>
+
+<!-- what the rollback actually did -->
+<div class="modal-backdrop" id="rb-result" hidden>
+  <div class="modal wide">
+    <h3>Rollback report</h3>
+    <div id="rb-report"></div>
+    <div class="modal-actions">
+      <button class="btn" id="rb-done">Close</button>
     </div>
   </div>
 </div>

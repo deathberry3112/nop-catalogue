@@ -379,6 +379,162 @@ $('#btn-commit').addEventListener('click', () => {
 $('#m-cancel').addEventListener('click', () => { $('#modal').hidden = true; });
 $('#m-confirm').addEventListener('click', () => { $('#modal').hidden = true; startRun(true); });
 
+/* ── rollback ────────────────────────────────────────────────────────────
+   Deleting products from a live catalogue. The dialog names every product
+   before anything happens, and the set it shows is the set the server sends
+   straight back — the POST carries those SKUs so the server can refuse if its
+   own recomputation disagrees. Nothing typed here can widen the scope. */
+
+let rbPlan = null;
+
+$('#btn-rollback').addEventListener('click', async () => {
+  rbPlan = null;
+  $('#rb-confirm').value = '';
+  $('#rb-go').disabled = true;
+  $('#rb-blocked').hidden = true;
+  $('#rb-excluded').hidden = true;
+  $('#rb-list').innerHTML = '<div class="rb-row muted">Working out what this run created…</div>';
+  $('#rb-modal').hidden = false;
+
+  let plan;
+  try {
+    plan = await api(`/api/runs/${state.runId}/rollback`);
+  } catch (e) {
+    $('#rb-list').innerHTML = '';
+    $('#rb-blocked').textContent = `Could not work out what to delete: ${e.message}`;
+    $('#rb-blocked').hidden = false;
+    return;
+  }
+
+  $('#rb-target').textContent = plan.base_url || 'the configured admin';
+
+  /* `excluded` is rendered for blocked plans too — it is the reason, and
+     hiding it is how "this run created no products" reads as a lie to someone
+     who just watched it create one. */
+  if (plan.excluded.length) {
+    $('#rb-excluded').innerHTML =
+      `<strong>Left alone</strong><ul>${
+        plan.excluded.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`;
+    $('#rb-excluded').hidden = false;
+  }
+
+  if (plan.blocked) {
+    $('#rb-list').innerHTML = '';
+    $('#rb-intro').textContent = '';
+    $('#rb-blocked').textContent = plan.blocked;
+    $('#rb-blocked').hidden = false;
+    $('#rb-confirm-field').hidden = true;
+    return;
+  }
+
+  rbPlan = plan;
+  $('#rb-confirm-field').hidden = false;
+  $('#rb-intro').innerHTML =
+    `<strong>${plan.count}</strong> product(s) were created by this run and will be
+     deleted. Nothing else on the store is touched — products this run resumed,
+     skipped, or only previewed are not in this list.`;
+  $('#rb-list').innerHTML = plan.products.map((p) => `
+    <div class="rb-row">
+      <span class="sku">${esc(p.sku)}</span>
+      ${p.row_status && p.row_status !== 'added'
+        ? `<span class="why">row ended as ${esc(p.row_status)}</span>` : ''}
+    </div>`).join('');
+
+});
+
+/* Typing DELETE is the arming step. Deliberately exact — a case-insensitive
+   match would arm on "delete", which people type by reflex. */
+$('#rb-confirm').addEventListener('input', (e) => {
+  $('#rb-go').disabled = !(rbPlan && e.target.value === 'DELETE');
+});
+
+$('#rb-cancel').addEventListener('click', () => { $('#rb-modal').hidden = true; });
+$('#rb-done').addEventListener('click', () => { $('#rb-result').hidden = true; });
+
+$('#rb-go').addEventListener('click', async () => {
+  if (!rbPlan) return;
+  const go = $('#rb-go');
+  go.disabled = true;
+  go.textContent = 'Deleting…';
+  let report;
+  try {
+    report = await api(`/api/runs/${state.runId}/rollback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      /* the SKUs the operator was actually shown — the server checks them
+         against its own recomputation and refuses on any disagreement */
+      body: JSON.stringify({ skus: rbPlan.products.map((p) => p.sku), ...readCreds() }),
+    });
+  } catch (e) {
+    go.disabled = false;
+    go.textContent = 'Delete them';
+    $('#rb-blocked').textContent = e.message;
+    $('#rb-blocked').hidden = false;
+    return;
+  }
+  go.textContent = 'Delete them';
+  $('#rb-modal').hidden = true;
+  showRollbackReport(report);
+  pollRun();          // the run's own view is unchanged, but re-read it anyway
+});
+
+/* The four outcomes, in the order someone reads them: what went, what was
+   already gone, and — the two that need action — what is still there. */
+const RB_GROUPS = [
+  ['deleted',      'Deleted',                  'ok'],
+  ['already_gone', 'Already gone',             'warn'],
+  ['refused',      'Refused — still in place', 'bad'],
+  ['failed',       'Failed — still in place',  'bad'],
+];
+
+function showRollbackReport(report) {
+  const counts = Object.fromEntries(
+    RB_GROUPS.map(([key]) => [key, (report[key] || []).length]));
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  const left = counts.refused + counts.failed;
+
+  /* Every tile, including the zeroes. On a destructive operation "0 refused,
+     0 failed" is the reassurance you came for — hiding it would leave you
+     wondering whether it was checked. */
+  const tiles = RB_GROUPS.map(([key, label, cls]) =>
+    `<div class="stat ${counts[key] ? cls : ''}">
+       <span class="stat-n">${counts[key]}</span>
+       <span class="stat-l">${esc(label.split(' —')[0])}</span>
+     </div>`).join('');
+
+  const row = (item) => (typeof item === 'string'
+    ? `<div class="rb-row"><span class="sku">${esc(item)}</span></div>`
+    : `<div class="rb-row detail">
+         <span class="sku">${esc(item.sku)}</span>
+         <span class="rb-why">${esc(item.why)}</span>
+       </div>`);
+
+  const groups = RB_GROUPS.map(([key, label, cls]) => {
+    const items = report[key] || [];
+    if (!items.length) return '';
+    return `<section class="rb-group">
+      <h4 class="rb-group-title">
+        <span class="pill ${cls}">${esc(label)}</span>
+        <span class="muted">${items.length}</span>
+      </h4>
+      <div class="rb-list ${cls}">${items.map(row).join('')}</div>
+    </section>`;
+  }).join('');
+
+  $('#rb-report').innerHTML = total
+    ? `<p class="rb-headline ${left ? 'warn' : ''}">
+         ${left
+           ? `<strong>${left} of ${total}</strong> product(s) could not be removed and are
+              still in the catalogue.`
+           : `<strong>${counts.deleted}</strong> product(s) removed from the catalogue.`}
+       </p>
+       <div class="stats wide">${tiles}</div>
+       ${groups}`
+    : '<p class="muted">Nothing to report.</p>';
+
+  $('#rb-result').hidden = false;
+}
+
 async function startRun(commit) {
   try {
     const { run_id } = await api('/api/runs', {
@@ -508,6 +664,13 @@ function renderRun(run) {
 
   $('#btn-report').hidden = run.status === 'running';
   $('#btn-report').href = `/api/runs/${run.id}/report`;
+
+  /* Only offered once the run has stopped and only when it actually created
+     something. A dry run has nothing to undo, and a live run's final set is
+     not knowable yet — the server refuses both, this just stops the button
+     from inviting it. */
+  const created = (run.counts || {}).added || 0;
+  $('#btn-rollback').hidden = run.status === 'running' || !run.commit || !created;
 
   renderFailures(run);
   renderRows(run);
