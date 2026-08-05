@@ -1,0 +1,148 @@
+# nopCommerce product upload
+
+Upload a product workbook, and it creates the products — with their
+specification, colour and size attributes, generated combinations, and the
+right child SKU on each combination.
+
+    xlsx -> parser -> rows -> runner (Playwright) -> nopCommerce admin
+                                 |                        |
+                                 +-> run store            +-> report.xlsx
+                                     (Supabase)               (re-uploadable)
+
+## Running it
+
+```bash
+python -m pip install -r requirements.txt
+python -m playwright install chromium
+# create .env with ADMIN_BASE_URL / ADMIN_EMAIL / ADMIN_PASSWORD — see Configuration
+python -m app.web.server      # http://127.0.0.1:8000
+```
+
+Tests, which need neither a browser nor credentials:
+
+```bash
+pytest                        # unit tests
+pytest -m live                # drives a real admin; needs ADMIN_* set
+pytest -m "live and cleanup"  # DELETES the products this automation created
+```
+
+## Configuration
+
+`.env` (gitignored — never commit it). Create it yourself; the keys are:
+
+| Key | Required | Without it |
+|---|---|---|
+| `ADMIN_BASE_URL` / `ADMIN_EMAIL` / `ADMIN_PASSWORD` | **yes** | nothing can run |
+| `OPENAI_API_KEY`, `OPENAI_MODEL` | no | colour tier 3 is off; unknown colours fail loudly instead of being inferred |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | no | runs are kept in memory only; the UI still works, history is lost on restart |
+
+Both integrations are optional on purpose. **Telemetry is never allowed to break
+the automation** — if Supabase is unreachable mid-run, every write is dropped
+with a warning and the products still get created.
+
+### One manual step: the database schema
+
+PostgREST cannot run DDL, so the schema has to be applied once by hand:
+
+> Supabase dashboard → SQL Editor → paste **`app/store/schema.sql`** → Run
+
+It is idempotent, so re-running it after a change is safe. Until it is applied
+the header shows `store: schema missing` and runs simply are not recorded.
+
+## How a run works
+
+**Preview** (the default) signs in, resolves every colour code, and fills the
+create form — then stops without saving. **Commit** creates products for real.
+
+A preview cannot check attributes or combinations: nopCommerce only exposes
+those tabs once a product exists. It checks the data and the form, which is
+where most problems are anyway.
+
+Per row, with the guard that matters:
+
+| Situation | What happens |
+|---|---|
+| SKU exists, this automation created it | resumed — finishes configuring it |
+| SKU exists, somebody else created it | **skipped, untouched** |
+| SKU is new | created, then configured |
+
+Several catalogue SKUs already exist as products nobody here made. Every product
+this automation creates is recorded (`created_products`, or `var/created-products.json`
+without Supabase) and that record is the only thing the cleanup path will delete.
+
+Every write step is idempotent, so a run that dies halfway can simply be run
+again — and the report it produces can be re-uploaded to finish the batch.
+
+## Colour codes
+
+Child SKUs carry a short code per colour (`CP-V-200 LE 2XL` — `LE` is
+Hi-Viz Lime). The payload never says which code is which colour, so it is
+resolved in three tiers:
+
+| Tier | Source | Cost |
+|---|---|---|
+| 1 | curated map, scoped per product family | free |
+| 2 | shape heuristic (`combination_skus.score`) | free |
+| 3 | OpenAI, over what is left | ~$0.0001 |
+
+**The map is scoped, not flat**, and this is not premature generality — the
+shipped payload contains a direct counterexample:
+
+    HardHat   Hi-Vis Lime -> HLE
+    Vest      Hi-Viz Lime -> LE      Lime -> LE
+
+The same colour, a different code per family. A flat map survives today only
+because the `Vis`/`Viz` spellings differ.
+
+Tier 3 is a **proposal, not a decision**: whatever it returns is verified
+against the payload's own combination list (every combination consumed exactly
+once, count equal to colours × sizes) before it is used. A hallucinated code
+produces a failed row, never a wrong SKU in the catalogue. Model resolutions are
+then held in the Colour map tab as *unconfirmed* until a human confirms them —
+verification proves an assignment is self-consistent, which is not the same as
+correct.
+
+On the current payload tier 3 fires **0%** of the time; tiers 1 and 2 resolve
+all 13 colours. That is the baseline to watch: a rising tier-3 share means the
+map needs curating.
+
+## Failures
+
+Every failure is classified (`app/errors.py`), which is what makes retry policy
+and triage possible:
+
+* **transient** (grid detached, timeout, expired session) — retried automatically
+* **deterministic** (unresolvable colour, bad row, changed selector) — **never
+  retried**; five attempts would spend five minutes reaching the same answer
+
+The UI groups failures by *cause*, not by row. A run with forty failures is
+usually two problems.
+
+## Layout
+
+```
+app/
+  config.py        settings; the only place secrets are read
+  errors.py        the error taxonomy + retry policy
+  parser.py        xlsx -> rows (refuses columns it does not understand)
+  colour/          the three-tier resolver + the curated map
+  store/           Supabase run store; schema.sql lives here
+  automation/      run_batch — the runner main.py drives
+  web/             FastAPI API + the upload console
+main.py            entry point: owns the browser, refuses unsafe runs
+library.py         Playwright helpers (steps, retries, nop widgets)
+pages/             page objects: landing, manage products, product form
+combination_skus.py  splits child SKUs into (colour, size)
+xlsxCreator.py     rows + summary -> the re-uploadable report
+docs/DESIGN.md     the design this was built from, and what is still open
+```
+
+## Known gaps
+
+* **No authentication on the web layer.** Do not expose it as it stands.
+* **Attributes beyond colour and size are not modelled.** A workbook with a
+  third attribute column is *rejected* rather than silently part-created — see
+  `docs/DESIGN.md` for what supporting it would take.
+* **Concurrency needs Supabase.** The local JSON ledger is an unlocked
+  read-modify-write, so two workers lose each other's entries. `created_products`
+  fixes this; apply the schema before running anything concurrently.

@@ -1,0 +1,11 @@
+playwright>=1.40
+openpyxl>=3.1
+
+# web layer
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+
+# optional integrations — the app runs without either, with reduced capability
+openai>=1.30          # colour resolution tier 3
+supabase>=2.4         # the run store / observability

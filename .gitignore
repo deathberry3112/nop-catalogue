@@ -1,0 +1,13 @@
+# secrets and local state — never commit
+.env
+var/
+
+# generated
+__pycache__/
+.pytest_cache/
+report.xlsx
+
+# local tooling
+.venv/
+.idea/
+.claude/settings.local.json

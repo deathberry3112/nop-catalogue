@@ -1,0 +1,162 @@
+"""In-process run manager: start a run, poll it, cancel it.
+
+Playwright's sync API cannot run inside an asyncio event loop, so every run
+executes on its own worker THREAD and the API only ever reads the RunStore's
+in-memory snapshot. That keeps the HTTP layer responsive while a run holds a
+browser open for several minutes, and it is also the seam concurrency arrives
+through — MAX_CONCURRENT below is a semaphore, not a rewrite.
+
+This manager is deliberately in-process and therefore single-machine. It is the
+right amount of machinery for one worker running a handful of batches. The
+moment runs must survive a restart or spread across containers, the queue moves
+into Postgres (`select ... for update skip locked` against `runs`, which the
+schema already carries `worker_id` and `lease_expires_at` for) and this class
+becomes a thin client of it. Nothing above it changes when that happens.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+import uuid
+from pathlib import Path
+from typing import Any
+
+import main
+import xlsxCreator
+from app.config import ROOT, settings
+from app.store import RunStore
+
+log = logging.getLogger("web.runs")
+
+REPORT_DIR = ROOT / "var" / "reports"
+
+#: Concurrent browser sessions against ONE nop instance. Four is a starting
+#: point, not a measurement — the admin is the shared resource and it will
+#: complain before the worker does. Tune from observed p95 per product.
+MAX_CONCURRENT = 4
+
+_semaphore = threading.BoundedSemaphore(MAX_CONCURRENT)
+
+
+class RunManager:
+    """Every run this process knows about, live or finished."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._runs: dict[str, RunStore] = {}
+        self._threads: dict[str, threading.Thread] = {}
+        self._cancelled: set[str] = set()
+
+    # --- starting --------------------------------------------------------
+
+    def start(self, rows: list[dict], *, commit: bool, filename: str = "",
+              base_url: str = "", email: str = "", password: str = "",
+              triggered_by: str = "web") -> str:
+        config = settings()
+        base_url = base_url or config.admin_base_url
+        email = email or config.admin_email
+        password = password or config.admin_password
+
+        options = main.RunOptions.from_env(
+            commit=commit,
+            output_xlsx=None,                 # written by hand below, per run
+        )
+        credentials = main.Credentials(base_url=base_url, email=email,
+                                       password=password)
+
+        store = RunStore.start(rows, base_url=base_url, commit=commit,
+                               filename=filename, triggered_by=triggered_by,
+                               options={"commit": commit,
+                                        "on_existing": options.on_existing})
+
+        with self._lock:
+            self._runs[store.run_id] = store
+
+        thread = threading.Thread(
+            target=self._execute, name=f"run-{store.run_id[:8]}",
+            args=(store, rows, options, credentials), daemon=True)
+        with self._lock:
+            self._threads[store.run_id] = thread
+        thread.start()
+        return store.run_id
+
+    def _execute(self, store: RunStore, rows: list[dict],
+                 options: main.RunOptions, credentials: main.Credentials) -> None:
+        """The worker thread. Owns the whole run and never raises out."""
+        acquired = _semaphore.acquire(timeout=1800)
+        if not acquired:
+            store.finish(error="timed out waiting for a free browser slot")
+            return
+        try:
+            store.event("run starting",
+                        data={"rows": len(rows), "commit": options.commit})
+
+            # Fired immediately before the row is opened, so `index` is the
+            # same 1-based counter the runner passes to row_started — which is
+            # what lets the console hang each row's steps off this one line.
+            def progress(done: int, total: int, sku: str) -> None:
+                store.event(f"[{done}/{total}] {sku}",
+                            data={"kind": "product", "sku": sku,
+                                  "index": done, "total": total})
+
+            summary = main.run(rows, options, credentials,
+                               progress=progress, store=store)
+            self._write_report(store, rows, summary)
+            store.finish()
+
+        except main.ConfigError as exc:
+            # Refused before the browser opened — the message is safe to show
+            # the person who uploaded the file.
+            log.warning("run %s refused: %s", store.run_id, exc)
+            store.event(str(exc), level="error")
+            store.finish(error=str(exc))
+        except Exception as exc:
+            log.exception("run %s crashed", store.run_id)
+            store.event(f"run crashed: {exc}", level="error")
+            store.finish(error=f"{type(exc).__name__}: {exc}")
+        finally:
+            _semaphore.release()
+
+    def _write_report(self, store: RunStore, rows: list[dict],
+                      summary: dict) -> None:
+        """The re-uploadable .xlsx. Written even for a failed run — a batch
+        that died halfway is exactly when you want to know which rows made it."""
+        try:
+            REPORT_DIR.mkdir(parents=True, exist_ok=True)
+            path = REPORT_DIR / f"{store.run_id}.xlsx"
+            counts = xlsxCreator.write_report(rows, summary, path)
+            store.event("report written", data={"counts": counts})
+        except Exception as exc:
+            log.warning("could not write the report for %s: %s", store.run_id, exc)
+            store.event(f"could not write the report: {exc}", level="warn")
+
+    # --- reading ---------------------------------------------------------
+
+    def get(self, run_id: str) -> RunStore | None:
+        with self._lock:
+            return self._runs.get(run_id)
+
+    def snapshot(self, run_id: str) -> dict | None:
+        store = self.get(run_id)
+        return store.snapshot() if store else None
+
+    def list(self) -> list[dict]:
+        """Newest first, summary only — the run list must not carry every row."""
+        with self._lock:
+            stores = list(self._runs.values())
+        summaries = []
+        for store in stores:
+            snap = store.snapshot()
+            snap.pop("rows", None)
+            snap.pop("events", None)
+            summaries.append(snap)
+        return sorted(summaries, key=lambda s: s.get("started_at") or "",
+                      reverse=True)
+
+    def report_path(self, run_id: str) -> Path | None:
+        path = REPORT_DIR / f"{run_id}.xlsx"
+        return path if path.exists() else None
+
+
+MANAGER = RunManager()

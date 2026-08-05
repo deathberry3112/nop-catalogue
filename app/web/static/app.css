@@ -1,0 +1,460 @@
+/* Product upload console.
+   One stylesheet, no build step, no CDN — this runs on a box that may have no
+   outbound internet.
+
+   Light and dark are both first-class. The OS preference is the default; the
+   toggle in the top bar overrides it by putting data-theme on <html>, which is
+   why the media query below excludes any element carrying that attribute — an
+   explicit choice has to win in BOTH directions, not just towards dark. */
+
+:root {
+  color-scheme: light;
+  --bg:#f7f8fa; --panel:#fff; --panel-2:#fbfcfd; --line:#e3e7ed;
+  --ink:#161a20; --muted:#6b7480; --faint:#98a1ad;
+  --accent:#2f6df6; --accent-ink:#fff;
+  --ok:#0f8a5f; --ok-bg:#e6f6ef;
+  --warn:#b7791f; --warn-bg:#fdf5e5;
+  --bad:#d1435b; --bad-bg:#fdecef;
+  --skip:#6b7480; --skip-bg:#eef0f3;
+  --radius:10px;
+  --shadow:0 1px 2px rgba(16,24,40,.05), 0 4px 12px rgba(16,24,40,.05);
+  /* controls: a recessed field, and a soft focus halo instead of a hard outline */
+  --field:#fff; --field-line:#d8dee7;
+  --ring:rgba(47,109,246,.16);
+  --lift:0 1px 2px rgba(16,24,40,.07), 0 1px 1px rgba(16,24,40,.04);
+}
+
+/* The dark palette, applied on request… */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg:#0f1216; --panel:#161b22; --panel-2:#1b212a; --line:#262d38;
+  --ink:#e6eaf0; --muted:#98a1ad; --faint:#6b7480;
+  --accent:#4b83ff; --accent-ink:#0b0e12;
+  --ok:#3ddc97; --ok-bg:#10291f;
+  --warn:#e2b04a; --warn-bg:#2a2313;
+  --bad:#ff6b81; --bad-bg:#2c1519;
+  --skip:#98a1ad; --skip-bg:#1e242d;
+  --shadow:0 1px 2px rgba(0,0,0,.3), 0 4px 14px rgba(0,0,0,.25);
+  --field:#10151b; --field-line:#303845;
+  --ring:rgba(75,131,255,.26);
+  --lift:0 1px 2px rgba(0,0,0,.4);
+}
+/* …and by default, when the OS asks for it and nobody has chosen otherwise. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --bg:#0f1216; --panel:#161b22; --panel-2:#1b212a; --line:#262d38;
+    --ink:#e6eaf0; --muted:#98a1ad; --faint:#6b7480;
+    --accent:#4b83ff; --accent-ink:#0b0e12;
+    --ok:#3ddc97; --ok-bg:#10291f;
+    --warn:#e2b04a; --warn-bg:#2a2313;
+    --bad:#ff6b81; --bad-bg:#2c1519;
+    --skip:#98a1ad; --skip-bg:#1e242d;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 4px 14px rgba(0,0,0,.25);
+    --field:#10151b; --field-line:#303845;
+    --ring:rgba(75,131,255,.26);
+    --lift:0 1px 2px rgba(0,0,0,.4);
+  }
+}
+
+* { box-sizing:border-box; }
+
+/* Any `display` rule below outranks the hidden attribute's default UA style,
+   which silently leaves invisible elements swallowing clicks — the modal
+   backdrop did exactly that across the whole page. */
+[hidden] { display:none !important; }
+body {
+  margin:0; background:var(--bg); color:var(--ink);
+  font:14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+.muted { color:var(--muted); }
+.hint { color:var(--muted); font-size:13px; max-width:70ch; margin:.25rem 0 1rem; }
+code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size:.92em;
+       background:var(--panel-2); border:1px solid var(--line);
+       padding:.05em .35em; border-radius:4px; }
+
+/* ─── top bar ─────────────────────────────────────────────────────────── */
+.topbar {
+  display:flex; align-items:center; gap:1.5rem;
+  padding:.75rem 1.5rem; background:var(--panel);
+  border-bottom:1px solid var(--line); position:sticky; top:0; z-index:20;
+}
+.brand { display:flex; align-items:center; gap:.6rem; }
+.brand h1 { font-size:15px; font-weight:650; margin:0; letter-spacing:-.01em; }
+.dot { width:9px; height:9px; border-radius:50%; background:var(--accent); }
+
+.tabs { display:flex; gap:.25rem; }
+.tab {
+  border:0; background:transparent; color:var(--muted); cursor:pointer;
+  font:inherit; font-weight:550; padding:.45rem .75rem; border-radius:7px;
+  display:flex; align-items:center; gap:.4rem;
+}
+.tab:hover { background:var(--panel-2); color:var(--ink); }
+.tab.is-active { background:var(--accent); color:var(--accent-ink); }
+
+.badge {
+  min-width:18px; padding:0 5px; height:18px; line-height:18px; text-align:center;
+  background:var(--bad); color:#fff; border-radius:9px; font-size:11px; font-weight:700;
+}
+.badge.warn { background:var(--warn); }
+.tab.is-active .badge { background:rgba(255,255,255,.25); }
+
+/* ─── theme control ───────────────────────────────────────────────────── */
+/* A track with a raised thumb — the same shape language as .tab, so it reads
+   as part of the header rather than a control dropped on top of it. */
+.seg {
+  margin-left:auto; flex-shrink:0;
+  display:inline-flex; gap:2px; padding:3px;
+  background:var(--panel-2); border:1px solid var(--line); border-radius:9px;
+}
+.seg-btn {
+  width:28px; height:24px; padding:0; border:0; border-radius:6px;
+  background:transparent; color:var(--faint); cursor:pointer;
+  display:inline-flex; align-items:center; justify-content:center;
+  transition:color .15s, background .15s, box-shadow .15s;
+}
+.seg-btn svg {
+  width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:1.7;
+  stroke-linecap:round; stroke-linejoin:round;
+}
+.seg-btn:hover { color:var(--ink); }
+.seg-btn:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.seg-btn[aria-checked="true"] {
+  background:var(--panel); color:var(--accent); box-shadow:var(--lift);
+}
+
+/* ─── layout ──────────────────────────────────────────────────────────── */
+main { max-width:1180px; margin:0 auto; padding:1.75rem 1.5rem 5rem; }
+.view { display:none; }
+.view.is-active { display:block; animation:fade .18s ease; }
+@keyframes fade { from { opacity:0; transform:translateY(3px); } }
+
+.section-title { font-size:17px; font-weight:650; margin:0 0 .2rem; letter-spacing:-.01em; }
+.section-title.sm { font-size:14px; margin:2rem 0 .3rem; }
+.empty { color:var(--faint); text-align:center; padding:3rem 0; }
+.flush { margin:0; }
+
+/* ─── admin connection ────────────────────────────────────────────────── */
+.panel {
+  background:var(--panel); border:1px solid var(--line);
+  border-radius:var(--radius); padding:1rem 1.1rem; box-shadow:var(--shadow);
+}
+.panel-head {
+  display:flex; align-items:center; justify-content:space-between;
+  gap:1rem; margin-bottom:.85rem;
+}
+/* Hidden, not deleted. The admin URL, sign-in and password come from the
+   server's .env — RunManager.start falls back to ADMIN_* per field, so an
+   empty form is a complete request. The markup stays because the run flow
+   still reads these inputs (readCreds/restoreCreds and the password toggle all
+   query them by id); removing them throws at load and takes the page with it.
+   Delete this rule to hand the fields back to the operator. */
+.conn { display:none; margin-bottom:1.25rem; border-radius:14px; }
+.conn-grid {
+  display:grid; gap:.8rem;
+  grid-template-columns:minmax(0,1.6fr) minmax(0,1.2fr) minmax(0,1fr);
+}
+.field { display:flex; flex-direction:column; gap:.35rem; min-width:0; }
+.field-label { font-size:12px; font-weight:550; color:var(--muted); }
+
+/* One input treatment, shared by every text field in the app. The icon is
+   inside the box and the focus halo is a shadow, not an outline — an outline
+   sits outside the border radius and clips against neighbours in a grid. */
+.input-wrap { position:relative; display:block; }
+.input-ic {
+  position:absolute; left:.7rem; top:50%; transform:translateY(-50%);
+  width:15px; height:15px; pointer-events:none;
+  fill:none; stroke:currentColor; stroke-width:1.6;
+  stroke-linecap:round; stroke-linejoin:round;
+  color:var(--faint); transition:color .15s;
+}
+.input-wrap:focus-within .input-ic { color:var(--accent); }
+
+.field input, .colour-add input {
+  font:inherit; width:100%; padding:.55rem .75rem; border-radius:9px;
+  border:1px solid var(--field-line); background:var(--field); color:var(--ink);
+  box-shadow:var(--lift);
+  transition:border-color .15s, box-shadow .15s;
+}
+.input-wrap input { padding-left:2.25rem; }
+.field input::placeholder, .colour-add input::placeholder { color:var(--faint); }
+.field input:hover, .colour-add input:hover { border-color:var(--muted); }
+.field input:focus, .colour-add input:focus {
+  outline:0; border-color:var(--accent); box-shadow:0 0 0 3px var(--ring);
+}
+
+/* the reveal sits inside the field so the input keeps the full row width */
+.pw-toggle {
+  position:absolute; right:.3rem; top:50%; transform:translateY(-50%);
+  width:26px; height:26px; padding:0; border:0; border-radius:6px;
+  background:transparent; color:var(--faint); cursor:pointer;
+  display:inline-flex; align-items:center; justify-content:center;
+}
+.pw-toggle svg {
+  width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.6;
+  stroke-linecap:round; stroke-linejoin:round;
+}
+.pw-toggle:hover { color:var(--accent); }
+.pw-toggle:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.input-wrap.pw input { padding-right:2.5rem; }
+/* the icon shows what the click will DO: an open eye means "reveal" */
+.pw input[type="password"] ~ .pw-toggle .ic-eye-off,
+.pw input[type="text"]     ~ .pw-toggle .ic-eye { display:none; }
+
+.conn .hint { margin-top:.85rem; max-width:none; }
+
+/* ─── dropzone ────────────────────────────────────────────────────────── */
+.drop {
+  border:1.5px dashed var(--line); border-radius:14px; background:var(--panel);
+  padding:3rem 1.5rem; text-align:center; cursor:pointer;
+  transition:border-color .15s, background .15s;
+}
+.drop:hover, .drop.hot { border-color:var(--accent); background:var(--panel-2); }
+.drop.hot { border-style:solid; }
+.drop-icon {
+  width:34px; height:34px; stroke:var(--accent); stroke-width:1.6; fill:none;
+  stroke-linecap:round; stroke-linejoin:round; margin-bottom:.5rem;
+}
+.drop-title { margin:0; font-weight:600; font-size:15px; }
+.drop-sub { margin:.25rem 0 0; color:var(--muted); font-size:13px; }
+.link {
+  background:none; border:0; color:var(--accent); cursor:pointer;
+  font:inherit; padding:0; text-decoration:underline; text-underline-offset:2px;
+}
+.link.back { margin-bottom:1rem; display:inline-block; text-decoration:none; font-weight:550; }
+
+/* ─── alerts ──────────────────────────────────────────────────────────── */
+.alert {
+  border-radius:var(--radius); padding:.7rem .9rem; margin:1rem 0; font-size:13px;
+  border:1px solid transparent;
+}
+.alert.error { background:var(--bad-bg);  color:var(--bad);  border-color:currentColor; }
+.alert.warn  { background:var(--warn-bg); color:var(--warn); border-color:currentColor; }
+.alert ul { margin:.4rem 0 0; padding-left:1.1rem; }
+
+/* ─── summary + stats ─────────────────────────────────────────────────── */
+.summary-bar {
+  display:flex; align-items:center; justify-content:space-between; gap:1rem;
+  background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+  padding:.85rem 1.1rem; margin:1.25rem 0 1rem; box-shadow:var(--shadow);
+}
+.summary-file { display:flex; flex-direction:column; gap:.1rem; min-width:0; }
+.summary-file strong { font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.summary-file span { font-size:12px; }
+
+.stats { display:flex; gap:.4rem; flex-shrink:0; }
+.stats.wide { margin:1rem 0; flex-wrap:wrap; }
+.stat {
+  background:var(--panel-2); border:1px solid var(--line); border-radius:8px;
+  padding:.4rem .7rem; text-align:center; min-width:64px;
+}
+.stat-n { display:block; font-size:17px; font-weight:680; line-height:1.15; }
+.stat-l { display:block; font-size:11px; color:var(--muted); text-transform:uppercase;
+          letter-spacing:.04em; }
+.stat.ok   .stat-n { color:var(--ok); }
+.stat.bad  .stat-n { color:var(--bad); }
+.stat.warn .stat-n { color:var(--warn); }
+
+/* ─── tables ──────────────────────────────────────────────────────────── */
+.table-wrap {
+  overflow-x:auto; background:var(--panel); border:1px solid var(--line);
+  border-radius:var(--radius); box-shadow:var(--shadow);
+}
+.grid { width:100%; border-collapse:collapse; font-size:13px; }
+.grid th {
+  text-align:left; font-weight:600; font-size:11px; text-transform:uppercase;
+  letter-spacing:.04em; color:var(--muted); padding:.55rem .8rem;
+  border-bottom:1px solid var(--line); background:var(--panel-2);
+  position:sticky; top:0; white-space:nowrap;
+}
+.grid td { padding:.55rem .8rem; border-bottom:1px solid var(--line); vertical-align:top; }
+.grid tr:last-child td { border-bottom:0; }
+.grid tr.bad td { background:var(--bad-bg); }
+.grid .num { text-align:right; font-variant-numeric:tabular-nums; }
+.grid td.sku { font-family:ui-monospace, Menlo, Consolas, monospace; font-weight:600; }
+
+/* row selection */
+.grid th.pick, .grid td.pick { width:1%; padding-right:0; white-space:nowrap; }
+.grid .pick input { width:15px; height:15px; margin:0; cursor:pointer; accent-color:var(--accent); }
+.grid tbody tr:has(.pick input:not(:checked)) { opacity:.55; }
+.grid tbody tr:has(.pick input:not(:checked)) td.sku { font-weight:500; }
+
+/* the duplicate decision sits with the warning it answers, not in a toolbar */
+.grid td .btn.dedupe { margin-top:.35rem; display:block; }
+
+.selection { margin-bottom:.5rem; color:var(--ink); font-size:13px; }
+.selection strong { font-variant-numeric:tabular-nums; }
+.bad-text { color:var(--bad); }
+
+/* ─── pills ───────────────────────────────────────────────────────────── */
+.pill {
+  display:inline-block; padding:.15rem .5rem; border-radius:20px;
+  font-size:11.5px; font-weight:650; white-space:nowrap;
+  background:var(--skip-bg); color:var(--skip);
+}
+.pill.ok      { background:var(--ok-bg);   color:var(--ok); }
+.pill.bad     { background:var(--bad-bg);  color:var(--bad); }
+.pill.warn    { background:var(--warn-bg); color:var(--warn); }
+.pill.running { background:var(--panel-2); color:var(--accent); }
+.pill.running::before {
+  content:""; display:inline-block; width:6px; height:6px; border-radius:50%;
+  background:var(--accent); margin-right:5px; animation:pulse 1s infinite;
+}
+@keyframes pulse { 50% { opacity:.25; } }
+
+/* ─── buttons ─────────────────────────────────────────────────────────── */
+.btn {
+  border:1px solid transparent; background:var(--accent); color:var(--accent-ink);
+  font:inherit; font-weight:600; padding:.5rem .95rem; border-radius:8px;
+  cursor:pointer; text-decoration:none; display:inline-block;
+}
+.btn:hover { filter:brightness(1.07); }
+.btn:disabled { opacity:.45; cursor:not-allowed; filter:none; }
+.btn.ghost  { background:var(--panel); color:var(--ink); border-color:var(--line); }
+/* Like .ghost but with nothing behind it — for the secondary action in a row
+   where a filled button already carries the eye. */
+.btn.quiet  { background:transparent; color:var(--ink); border-color:var(--line); }
+.btn.danger { background:var(--bad); color:#fff; }
+.btn.sm     { padding:.35rem .7rem; font-size:12.5px; }
+
+.actions {
+  display:flex; align-items:center; justify-content:space-between; gap:1.5rem;
+  margin-top:1.25rem; padding:1rem 1.1rem; background:var(--panel);
+  border:1px solid var(--line); border-radius:var(--radius); flex-wrap:wrap;
+}
+.action-note { font-size:12.5px; color:var(--muted); max-width:56ch; }
+.action-buttons { display:flex; gap:.5rem; flex-shrink:0; }
+
+/* ─── run list ────────────────────────────────────────────────────────── */
+.run-list { display:flex; flex-direction:column; gap:.5rem; margin-top:1rem; }
+.run-card {
+  display:flex; align-items:center; gap:1rem; padding:.8rem 1rem; cursor:pointer;
+  background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+}
+.run-card:hover { border-color:var(--accent); }
+.run-card .grow { flex:1; min-width:0; }
+.run-card .rc-title { font-weight:600; font-size:13.5px; }
+.run-card .rc-sub { font-size:12px; color:var(--muted); }
+
+/* ─── progress ────────────────────────────────────────────────────────── */
+.run-head { display:flex; justify-content:space-between; align-items:flex-start;
+            gap:1rem; flex-wrap:wrap; }
+.run-actions { display:flex; gap:.5rem; align-items:center; }
+.progress-block { margin:1.1rem 0 .25rem; }
+.progress { height:7px; background:var(--panel-2); border:1px solid var(--line);
+            border-radius:20px; overflow:hidden; }
+.progress-fill { height:100%; width:0; background:var(--accent);
+                 transition:width .35s ease; border-radius:20px; }
+.progress-meta { display:flex; justify-content:space-between; font-size:12px;
+                 margin-top:.35rem; font-variant-numeric:tabular-nums; }
+
+/* ─── failure groups ──────────────────────────────────────────────────── */
+.fgroup {
+  background:var(--panel); border:1px solid var(--line);
+  border-left:3px solid var(--bad); border-radius:var(--radius);
+  margin-bottom:.5rem; overflow:hidden;
+}
+.fgroup summary {
+  padding:.7rem .9rem; cursor:pointer; display:flex; align-items:center;
+  gap:.6rem; font-weight:600; font-size:13px; list-style:none;
+}
+.fgroup summary::-webkit-details-marker { display:none; }
+.fgroup summary::before { content:"▸"; color:var(--muted); font-size:11px; }
+.fgroup[open] summary::before { content:"▾"; }
+.fgroup .fbody { padding:0 .9rem .9rem 2rem; font-size:12.5px; }
+/* not scoped to .fgroup — the activity dropdowns show failures the same way */
+.fmsg {
+  font-family:ui-monospace, Menlo, Consolas, monospace; font-size:11.5px;
+  background:var(--panel-2); border:1px solid var(--line); border-radius:6px;
+  padding:.5rem .6rem; margin:.4rem 0; white-space:pre-wrap; word-break:break-word;
+  color:var(--muted);
+}
+.blame { margin-left:auto; font-weight:500; font-size:11.5px; color:var(--muted); }
+
+/* ─── activity log ────────────────────────────────────────────────────── */
+.log {
+  background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+  padding:.6rem .8rem; max-height:280px; overflow-y:auto;
+  font-family:ui-monospace, Menlo, Consolas, monospace; font-size:11.5px;
+  line-height:1.65;
+}
+.log-line { display:flex; gap:.6rem; }
+.log-line .t { color:var(--faint); flex-shrink:0; }
+.log-line.warn  .m { color:var(--warn); }
+.log-line.error .m { color:var(--bad); }
+
+/* A product line is a disclosure: the same row, plus what was done to it.
+   It has to sit flush with the plain lines around it — the marker takes the
+   place of the gap, so the timestamps in both stay on one column. */
+.alog summary {
+  display:flex; align-items:center; gap:.6rem; cursor:pointer;
+  list-style:none; border-radius:5px; padding-right:.2rem;
+}
+.alog summary::-webkit-details-marker { display:none; }
+.alog summary::before {
+  content:"▸"; color:var(--muted); font-size:11px; width:0;
+  margin-left:-.6rem;
+}
+.alog[open] summary::before { content:"▾"; }
+.alog summary:hover { background:var(--panel-2); }
+.alog summary:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.alog summary .t { color:var(--faint); flex-shrink:0; }
+.alog summary .m { font-weight:600; }
+.alog summary .pill { font-size:10px; padding:.05rem .4rem; }
+.alog .acount { margin-left:auto; color:var(--faint); flex-shrink:0; }
+
+.alog .abody {
+  margin:.15rem 0 .5rem 1.1rem; padding-left:.75rem;
+  border-left:1px solid var(--line);
+}
+.astep { display:flex; align-items:baseline; gap:.6rem; }
+.astep .t { color:var(--faint); flex-shrink:0; }
+.astep .m { color:var(--ink); }
+.astep .d { margin-left:auto; color:var(--faint); flex-shrink:0;
+            font-variant-numeric:tabular-nums; }
+.astep .try { color:var(--warn); margin-left:.4rem; }
+.astep::before {
+  content:"✓"; color:var(--ok); font-size:10px; flex-shrink:0; width:.7em;
+}
+.astep.bad::before  { content:"✕"; color:var(--bad); }
+.astep.bad .m       { color:var(--bad); }
+/* an event, not an action — it says something about the row rather than
+   being a thing done to it, so it gets a bullet and no tick */
+.astep.note::before { content:"·"; color:var(--faint); }
+.astep.note .m      { color:var(--muted); }
+.astep.note.warn .m  { color:var(--warn); }
+.astep.note.error .m { color:var(--bad); }
+.alog .fmsg { margin:.2rem 0 .3rem 1.3rem; }
+
+/* ─── colour map ──────────────────────────────────────────────────────── */
+/* the inputs here share the .field treatment above — one look for every field */
+.colour-add { display:flex; gap:.5rem; margin-bottom:1rem; flex-wrap:wrap; }
+.colour-add input { width:auto; min-width:160px; }
+
+/* ─── modal ───────────────────────────────────────────────────────────── */
+.modal-backdrop {
+  position:fixed; inset:0; background:rgba(10,14,20,.55); z-index:50;
+  display:flex; align-items:center; justify-content:center; padding:1.5rem;
+  backdrop-filter:blur(2px);
+}
+.modal {
+  background:var(--panel); border:1px solid var(--line); border-radius:14px;
+  padding:1.4rem; max-width:460px; box-shadow:0 20px 50px rgba(0,0,0,.3);
+}
+.modal h3 { margin:0 0 .6rem; font-size:16px; }
+.modal p { margin:.4rem 0; font-size:13px; }
+/* however many rows carry warnings, the confirm button stays on screen */
+.modal .alert { max-height:9.5rem; overflow-y:auto; margin:.8rem 0; }
+.modal-actions { display:flex; gap:.5rem; justify-content:flex-end; margin-top:1.2rem; }
+
+@media (max-width:860px) {
+  .conn-grid { grid-template-columns:1fr; }
+}
+@media (max-width:720px) {
+  .topbar { flex-wrap:wrap; gap:.75rem; }
+  .summary-bar { flex-direction:column; align-items:stretch; }
+  .actions { flex-direction:column; align-items:stretch; }
+  .action-buttons { justify-content:flex-end; }
+}

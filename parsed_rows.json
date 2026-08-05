@@ -1,0 +1,294 @@
+{
+  "source_file": "C:\\Users\\Kartikey\\Downloads\\RPA Data Input Template.xlsx",
+  "sheets": [
+    "HardHat",
+    "Vest"
+  ],
+  "total_rows": 7,
+  "valid_rows": 7,
+  "sheet_errors": [],
+  "rows": [
+    {
+      "sku": "CP-30-C100V",
+      "product_name": "CP-30-C100V",
+      "spec_value": "ZingHardHats",
+      "color_attr": "Color",
+      "colors": [
+        "Yellow",
+        "White",
+        "Blue",
+        "Hi-Vis Orange",
+        "Hi-Vis Lime"
+      ],
+      "swatches": [
+        "Yellow",
+        "White",
+        "Blue",
+        "Hi-Vis Orange",
+        "Hi-Vis Lime"
+      ],
+      "size_attr": "Size",
+      "sizes": [],
+      "generate_combinations": true,
+      "allow_out_of_stock": true,
+      "combinations": [
+        "CP-30-C100V YW",
+        "CP-30-C100V WE",
+        "CP-30-C100V HOE",
+        "CP-30-C100V HLE",
+        "CP-30-C100V BE"
+      ],
+      "save_product": true,
+      "source_sheet": "HardHat",
+      "source_row": 2,
+      "errors": [],
+      "warnings": []
+    },
+    {
+      "sku": "CP-30-C100",
+      "product_name": "CP-30-C100",
+      "spec_value": "ZingHardHats",
+      "color_attr": "Color",
+      "colors": [
+        "Yellow",
+        "White",
+        "Blue",
+        "Hi-Vis Orange",
+        "Hi-Vis Lime",
+        "Green",
+        "Pink",
+        "Red",
+        "Grey"
+      ],
+      "swatches": [
+        "Yellow",
+        "White",
+        "Blue",
+        "Hi-Vis Orange",
+        "Hi-Vis Lime",
+        "Green",
+        "Pink",
+        "Red",
+        "Grey"
+      ],
+      "size_attr": "Size",
+      "sizes": [],
+      "generate_combinations": true,
+      "allow_out_of_stock": true,
+      "combinations": [
+        "CP-30-C100 YW",
+        "CP-30-C100 WE",
+        "CP-30-C100 RD",
+        "CP-30-C100 PK",
+        "CP-30-C100 HOE",
+        "CP-30-C100 HLE",
+        "CP-30-C100 GY",
+        "CP-30-C100 GN",
+        "CP-30-C100 BE"
+      ],
+      "save_product": true,
+      "source_sheet": "HardHat",
+      "source_row": 3,
+      "errors": [],
+      "warnings": []
+    },
+    {
+      "sku": "CP-30-F100",
+      "product_name": "CP-30-F100",
+      "spec_value": "ZingHardHats",
+      "color_attr": "Color",
+      "colors": [
+        "Yellow",
+        "White",
+        "Blue",
+        "Hi-Vis Orange",
+        "Hi-Vis Lime",
+        "Green",
+        "Pink",
+        "Red",
+        "Grey"
+      ],
+      "swatches": [
+        "Yellow",
+        "White",
+        "Blue",
+        "Hi-Vis Orange",
+        "Hi-Vis Lime",
+        "Green",
+        "Pink",
+        "Red",
+        "Grey"
+      ],
+      "size_attr": "Size",
+      "sizes": [],
+      "generate_combinations": true,
+      "allow_out_of_stock": true,
+      "combinations": [
+        "CP-30-F100 YW",
+        "CP-30-F100 WE",
+        "CP-30-F100 RD",
+        "CP-30-F100 PK",
+        "CP-30-F100 HOE",
+        "CP-30-F100 HLE",
+        "CP-30-F100 GY",
+        "CP-30-F100 GN",
+        "CP-30-F100 BE"
+      ],
+      "save_product": true,
+      "source_sheet": "HardHat",
+      "source_row": 4,
+      "errors": [],
+      "warnings": []
+    },
+    {
+      "sku": "CP-30-F100V",
+      "product_name": "CP-30-F100V",
+      "spec_value": "ZingHardHats",
+      "color_attr": "Color",
+      "colors": [
+        "Yellow",
+        "White",
+        "Blue",
+        "Hi-Vis Orange",
+        "Hi-Vis Lime"
+      ],
+      "swatches": [
+        "Yellow",
+        "White",
+        "Blue",
+        "Hi-Vis Orange",
+        "Hi-Vis Lime",
+        "Green",
+        "Pink",
+        "Red",
+        "Grey"
+      ],
+      "size_attr": "Size",
+      "sizes": [],
+      "generate_combinations": true,
+      "allow_out_of_stock": true,
+      "combinations": [
+        "CP-30-F100V YW",
+        "CP-30-F100V WE",
+        "CP-30-F100V HOE",
+        "CP-30-F100V HLE",
+        "CP-30-F100V BE"
+      ],
+      "save_product": true,
+      "source_sheet": "HardHat",
+      "source_row": 5,
+      "errors": [],
+      "warnings": [
+        "9 swatches for 5 colors"
+      ]
+    },
+    {
+      "sku": "CP-V-010",
+      "product_name": "CP-V-010",
+      "spec_value": "ZingHighViz",
+      "color_attr": "Color",
+      "colors": [
+        "Hi-Viz Lime",
+        "Hi-Viz Orange"
+      ],
+      "swatches": [
+        "Hi-Viz Lime",
+        "Hi-Viz Orange"
+      ],
+      "size_attr": "Size",
+      "sizes": [
+        "OS"
+      ],
+      "generate_combinations": true,
+      "allow_out_of_stock": true,
+      "combinations": [
+        "CP-V-010 LE OS",
+        "CP-V-010 OE OS"
+      ],
+      "save_product": true,
+      "source_sheet": "Vest",
+      "source_row": 2,
+      "errors": [],
+      "warnings": []
+    },
+    {
+      "sku": "CP-V-010T",
+      "product_name": "CP-V-010T",
+      "spec_value": "ZingHighViz",
+      "color_attr": "Color",
+      "colors": [
+        "Hi-Viz Lime",
+        "Hi-Viz Orange"
+      ],
+      "swatches": [
+        "Hi-Viz Lime",
+        "Hi-Viz Orange"
+      ],
+      "size_attr": "Size",
+      "sizes": [
+        "OS"
+      ],
+      "generate_combinations": true,
+      "allow_out_of_stock": true,
+      "combinations": [
+        "CP-V-010T LE OS",
+        "CP-V-010T OE OS"
+      ],
+      "save_product": true,
+      "source_sheet": "Vest",
+      "source_row": 3,
+      "errors": [],
+      "warnings": []
+    },
+    {
+      "sku": "CP-V-200",
+      "product_name": "CP-V-200",
+      "spec_value": "ZingHighViz",
+      "color_attr": "Color",
+      "colors": [
+        "Lime",
+        "Orange"
+      ],
+      "swatches": [
+        "Lime",
+        "Orange"
+      ],
+      "size_attr": "Size",
+      "sizes": [
+        "S",
+        "M",
+        "L",
+        "XL",
+        "2XL",
+        "3XL",
+        "4XL",
+        "5XL"
+      ],
+      "generate_combinations": true,
+      "allow_out_of_stock": true,
+      "combinations": [
+        "CP-V-200 LE 2XL",
+        "CP-V-200 LE 3XL",
+        "CP-V-200 LE 4XL",
+        "CP-V-200 LE 5XL",
+        "CP-V-200 LE L",
+        "CP-V-200 LE M",
+        "CP-V-200 LE S",
+        "CP-V-200 LE XL",
+        "CP-V-200 OE 2XL",
+        "CP-V-200 OE 3XL",
+        "CP-V-200 OE 4XL",
+        "CP-V-200 OE 5XL",
+        "CP-V-200 OE L",
+        "CP-V-200 OE M",
+        "CP-V-200 OE S",
+        "CP-V-200 OE XL"
+      ],
+      "save_product": true,
+      "source_sheet": "Vest",
+      "source_row": 4,
+      "errors": [],
+      "warnings": []
+    }
+  ]
+}

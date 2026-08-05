@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Product Upload — nopCommerce</title>
+  <link rel="stylesheet" href="/app.css">
+  <script>
+    /* Before first paint, so an explicit choice never flashes the other theme.
+       No stored choice means no attribute, which leaves the OS in charge. */
+    try {
+      var t = localStorage.getItem('nop.theme');
+      if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+    } catch (e) { /* private mode — the OS preference still applies */ }
+  </script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="dot"></span>
+    <h1>Product Upload</h1>
+  </div>
+  <nav class="tabs">
+    <button class="tab is-active" data-view="upload">Upload</button>
+    <button class="tab" data-view="runs">Runs <span class="badge" id="runs-badge" hidden></span></button>
+    <button class="tab" data-view="colours">Colour map <span class="badge warn" id="colour-badge" hidden></span></button>
+  </nav>
+  <!-- A segmented control, not a cycling button: three states are worth showing
+       all at once, and "follow system" stops being a hidden third click. -->
+  <div class="seg" id="theme" role="radiogroup" aria-label="Colour theme">
+    <button class="seg-btn" type="button" role="radio" data-theme-set="system"
+            title="Follow the system theme" aria-label="Follow the system theme">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="2.75" y="4.5" width="18.5" height="12.5" rx="2.25"/>
+        <path d="M9 20.5h6"/>
+      </svg>
+    </button>
+    <button class="seg-btn" type="button" role="radio" data-theme-set="light"
+            title="Light" aria-label="Light theme">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="4"/>
+        <path d="M12 2.6v2M12 19.4v2M2.6 12h2M19.4 12h2M5.4 5.4l1.4 1.4M17.2 17.2l1.4 1.4M18.6 5.4l-1.4 1.4M6.8 17.2l-1.4 1.4"/>
+      </svg>
+    </button>
+    <button class="seg-btn" type="button" role="radio" data-theme-set="dark"
+            title="Dark" aria-label="Dark theme">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M20.5 14.3A8.5 8.5 0 1 1 9.7 3.5a6.8 6.8 0 0 0 10.8 10.8Z"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main>
+
+  <!-- ─── UPLOAD ─────────────────────────────────────────────────────── -->
+  <section class="view is-active" id="view-upload">
+
+    <!-- which admin to drive, and who to sign in as -->
+    <section class="panel conn">
+      <div class="panel-head">
+        <h2 class="section-title sm flush">Admin connection</h2>
+      </div>
+      <div class="conn-grid">
+        <label class="field">
+          <span class="field-label">Store admin URL</span>
+          <span class="input-wrap">
+            <svg class="input-ic" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="9"/>
+              <path d="M3.2 9.5h17.6M3.2 14.5h17.6M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18Z"/>
+            </svg>
+            <input id="a-url" type="url" inputmode="url" spellcheck="false"
+                   autocomplete="off" placeholder="https://your-shop.com/Admin">
+          </span>
+        </label>
+        <label class="field">
+          <span class="field-label">Email</span>
+          <span class="input-wrap">
+            <svg class="input-ic" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="2.75" y="4.75" width="18.5" height="14.5" rx="2.5"/>
+              <path d="M3.5 8.5l8.5 5.5 8.5-5.5"/>
+            </svg>
+            <input id="a-email" type="email" spellcheck="false"
+                   autocomplete="username" placeholder="admin@your-shop.com">
+          </span>
+        </label>
+        <label class="field">
+          <span class="field-label">Password</span>
+          <span class="input-wrap pw">
+            <svg class="input-ic" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="4" y="10.5" width="16" height="10.5" rx="2.5"/>
+              <path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>
+            </svg>
+            <input id="a-pass" type="password" autocomplete="current-password"
+                   placeholder="••••••••••">
+            <button class="pw-toggle" id="a-pass-toggle" type="button"
+                    aria-label="Show password" title="Show password">
+              <svg class="ic-eye" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12Z"/>
+                <circle cx="12" cy="12" r="2.75"/>
+              </svg>
+              <svg class="ic-eye-off" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M9.9 5.7A10.6 10.6 0 0 1 12 5.5c6.4 0 10 6.5 10 6.5a18 18 0 0 1-3.3 4.1M6.4 7.6A17.6 17.6 0 0 0 2 12s3.6 6.5 10 6.5a10.9 10.9 0 0 0 3.4-.5"/>
+                <path d="M10.1 10.1a2.75 2.75 0 0 0 3.8 3.8M3.5 3.5l17 17"/>
+              </svg>
+            </button>
+          </span>
+        </label>
+      </div>
+      <p class="hint flush">
+        Sent to this server for the run only. The URL and email are remembered in
+        this browser — the password never is. Leave a field blank to fall back to
+        the matching <code>ADMIN_*</code> value from <code>.env</code>.
+      </p>
+    </section>
+
+    <div class="drop" id="drop">
+      <input type="file" id="file" accept=".xlsx,.xlsm" hidden>
+      <div class="drop-inner">
+        <svg viewBox="0 0 24 24" class="drop-icon" aria-hidden="true">
+          <path d="M12 16V4m0 0L8 8m4-4 4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
+        </svg>
+        <p class="drop-title">Drop your product workbook here</p>
+        <p class="drop-sub">or <button class="link" id="browse">browse</button> — .xlsx</p>
+      </div>
+    </div>
+
+    <div id="parse-error" class="alert error" hidden></div>
+
+    <!-- preview -->
+    <div id="preview" hidden>
+      <div class="summary-bar">
+        <div class="summary-file">
+          <strong id="p-filename"></strong>
+          <span class="muted" id="p-sheets"></span>
+        </div>
+        <div class="stats">
+          <div class="stat"><span class="stat-n" id="p-total">0</span><span class="stat-l">rows</span></div>
+          <div class="stat ok"><span class="stat-n" id="p-valid">0</span><span class="stat-l">ready</span></div>
+          <!-- warned rows DO run and DO commit — the count is here so that is a
+               decision rather than a surprise -->
+          <div class="stat warn" id="p-warned-wrap" hidden><span class="stat-n" id="p-warned">0</span><span class="stat-l">to check</span></div>
+          <div class="stat bad" id="p-blocked-wrap" hidden><span class="stat-n" id="p-blocked">0</span><span class="stat-l">blocked</span></div>
+        </div>
+      </div>
+
+      <div id="p-issues" class="alert warn" hidden></div>
+      <!-- template problems, not data problems: one fix to a column, not one
+           per row, so it gets said once and up front -->
+      <div id="p-template" class="alert warn" hidden></div>
+
+      <div class="table-wrap">
+        <table class="grid" id="p-table">
+          <thead>
+            <tr>
+              <th class="pick">
+                <input type="checkbox" id="p-all" title="Select every row"
+                       aria-label="Select every row">
+              </th>
+              <th></th><th>SKU</th><th>Product name</th><th>Sheet</th>
+              <th>Spec</th><th class="num">Colours</th><th class="num">Sizes</th>
+              <th class="num">Combos</th><th>Problems</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="actions">
+        <div class="action-note">
+          <div id="p-selection" class="selection"></div>
+          <strong>Preview</strong> signs in, resolves every colour code and fills the create
+          form — then stops without saving. It cannot check attributes or combinations,
+          because nopCommerce only shows those once a product exists.
+          <strong>Commit</strong> creates products for real.
+        </div>
+        <div class="action-buttons">
+          <button class="btn danger" id="btn-reset">Discard</button>
+          <button class="btn quiet" id="btn-preview">Preview run</button>
+          <button class="btn" id="btn-commit">Commit to catalogue…</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── RUNS ───────────────────────────────────────────────────────── -->
+  <section class="view" id="view-runs">
+    <div id="run-list-wrap">
+      <h2 class="section-title">Runs</h2>
+      <div id="run-list" class="run-list"></div>
+      <p class="empty" id="runs-empty">No runs yet. Upload a workbook to start one.</p>
+    </div>
+
+    <div id="run-detail" hidden>
+      <button class="link back" id="btn-back">← All runs</button>
+
+      <div class="run-head">
+        <div>
+          <h2 class="section-title" id="r-title">Run</h2>
+          <p class="muted mono" id="r-id"></p>
+        </div>
+        <div class="run-actions">
+          <span class="pill" id="r-mode"></span>
+          <span class="pill" id="r-status"></span>
+          <a class="btn ghost" id="btn-report" href="#" hidden>Download report</a>
+        </div>
+      </div>
+
+      <div class="progress-block">
+        <div class="progress"><div class="progress-fill" id="r-fill"></div></div>
+        <div class="progress-meta">
+          <span id="r-progress">0 / 0</span>
+          <span id="r-eta" class="muted"></span>
+        </div>
+      </div>
+
+      <div class="stats wide" id="r-stats"></div>
+
+      <div id="r-failures" hidden>
+        <h3 class="section-title sm">Failures by cause</h3>
+        <p class="hint">Grouped by what went wrong, not by row — a batch usually has
+          two problems, not forty.</p>
+        <div id="r-failure-groups"></div>
+      </div>
+
+      <h3 class="section-title sm">Products</h3>
+      <div class="table-wrap">
+        <table class="grid" id="r-table">
+          <thead>
+            <tr><th>SKU</th><th>Status</th><th>Colour tiers</th><th>Steps</th><th>Detail</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <h3 class="section-title sm">Activity</h3>
+      <p class="hint">Each product line expands into the actions performed on that
+        product in the admin, in order.</p>
+      <div class="log" id="r-log"></div>
+    </div>
+  </section>
+
+  <!-- ─── COLOURS ────────────────────────────────────────────────────── -->
+  <section class="view" id="view-colours">
+    <h2 class="section-title">Colour map</h2>
+    <p class="hint">
+      Which short code each colour uses in its child SKUs. Scoped per product family,
+      because the same colour does not always carry the same code —
+      <code>Hi-Vis Lime</code> is <code>HLE</code> on hard hats but <code>LE</code> on vests.
+      Entries proposed by the heuristic or the model are used, but stay
+      <em>unconfirmed</em> until someone here says they are right.
+    </p>
+
+    <div class="colour-add">
+      <input id="c-scope" placeholder="Scope (e.g. HardHat)" />
+      <input id="c-colour" placeholder="Colour (e.g. Yellow)" />
+      <input id="c-code" placeholder="Code (e.g. YW)" />
+      <button class="btn sm" id="c-add">Add / correct</button>
+    </div>
+
+    <div class="table-wrap">
+      <table class="grid" id="c-table">
+        <thead>
+          <tr><th>Scope</th><th>Colour</th><th>Code</th><th>Source</th><th>Status</th><th></th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<!-- commit confirmation -->
+<div class="modal-backdrop" id="modal" hidden>
+  <div class="modal">
+    <h3>Commit to the live catalogue?</h3>
+    <p>This creates <strong id="m-count">0</strong> product(s) on
+       <span class="mono" id="m-target"></span>.</p>
+    <div class="alert warn" id="m-warn" hidden></div>
+    <p class="muted">Products already in the catalogue that this automation did not
+       create are skipped and left untouched. Everything it does create is recorded,
+       so it can be found and removed later.</p>
+    <div class="modal-actions">
+      <button class="btn ghost" id="m-cancel">Cancel</button>
+      <button class="btn danger" id="m-confirm">Yes, create them</button>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
