@@ -1,0 +1,17 @@
+# Secrets and local state — .env especially: it must never reach an image layer.
+.env
+var/
+
+# Local tooling and caches
+.git
+.gitignore
+.venv/
+.idea/
+.claude/
+.pytest_cache/
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Generated locally; the app writes its own under var/
+report.xlsx

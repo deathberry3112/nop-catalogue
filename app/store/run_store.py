@@ -260,7 +260,28 @@ class RunStore:
         self._safe(lambda: get_client().table("created_products").upsert({
             "base_url": base_url, "sku": sku, "product_url": product_url,
             "product_id": product_id, "run_id": self.run_id,
+            # Clearing this is not tidiness. The row is reused per (base_url,
+            # sku), so a SKU that was rolled back and then created again
+            # inherits the old tombstone unless it is explicitly cleared — and
+            # a claim that says "deleted" while the product exists is invisible
+            # to owned_skus(), which silently disarms the ownership guard, and
+            # to the rollback, which then reports it created nothing.
+            "deleted_at": None,
         }, on_conflict="base_url,sku").execute(), what="claim")
+
+    def release_product(self, base_url: str, sku: str) -> None:
+        """Retire an ownership claim — the product is gone from the catalogue.
+
+        Soft, not a delete: the row stays as the record that this automation
+        once created that SKU, and owned_skus() already filters on deleted_at
+        being null. Stamping it is what stops a claim outliving its product,
+        which would let a later run treat a SKU the client has since created
+        for themselves as ours and edit it.
+        """
+        self._safe(lambda: get_client().table("created_products").update({
+            "deleted_at": _now(),
+        }).eq("base_url", base_url).eq("sku", sku)
+            .is_("deleted_at", "null").execute(), what="release")
 
     def owned_skus(self, base_url: str) -> set[str]:
         """SKUs this automation created on that store, across all runs."""

@@ -14,7 +14,7 @@ right child SKU on each combination.
 ```bash
 python -m pip install -r requirements.txt
 python -m playwright install chromium
-# create .env with ADMIN_BASE_URL / ADMIN_EMAIL / ADMIN_PASSWORD — see Configuration
+cp .env.example .env          # then fill in ADMIN_* — see Configuration
 python -m app.web.server      # http://127.0.0.1:8000
 ```
 
@@ -117,6 +117,44 @@ and triage possible:
 
 The UI groups failures by *cause*, not by row. A run with forty failures is
 usually two problems.
+
+## Deploying
+
+One container serves both the console and the API, so there is one thing to
+deploy, one origin, and no CORS to configure.
+
+    Dockerfile -> Railway -> https://<service>.up.railway.app
+
+The image is built from `mcr.microsoft.com/playwright/python`, which already
+carries Chromium and its system libraries. **Its tag and the `playwright==`
+pin in `requirements.txt` must move together** — Playwright locates browsers by
+version, so a mismatch fails at run time with "Executable doesn't exist", not
+at build time. The build then launches headless Chromium for real and fails if
+it cannot, so a broken browser stops the deploy instead of somebody's upload.
+
+`python -m app.web.server` is the entry point in every environment. It binds
+`HOST` (default `127.0.0.1`) and `PORT` (default `8000`); the Dockerfile sets
+`HOST=0.0.0.0` and Railway injects `PORT`.
+
+| Setting | Value |
+|---|---|
+| Build | Dockerfile, via `railway.json` |
+| Healthcheck | `/api/ping` — liveness only, so an unreachable Supabase cannot fail a deploy |
+| Variables | everything in `.env.example`; only the `ADMIN_*` block is required |
+| Volume | mount at `/app/var` to keep reports and the local ledger across deploys |
+
+Every push to the watched branch rebuilds and redeploys through Railway's
+GitHub integration. There is no separate front-end pipeline, because there is
+no separate front end.
+
+Two things to know before giving anyone the URL:
+
+* **There is still no authentication** — see Known gaps. A public URL is a
+  public admin tool, and `ADMIN_*` being set server-side means a visitor does
+  not need credentials of their own to start a run.
+* Without a volume `var/` is ephemeral: run reports and the local
+  created-products ledger do not survive a redeploy. Supabase covers the run
+  history and the ledger; the report `.xlsx` files have no remote store.
 
 ## Layout
 

@@ -232,6 +232,7 @@ main { max-width:1180px; margin:0 auto; padding:1.75rem 1.5rem 5rem; }
 }
 .alert.error { background:var(--bad-bg);  color:var(--bad);  border-color:currentColor; }
 .alert.warn  { background:var(--warn-bg); color:var(--warn); border-color:currentColor; }
+.alert.ok    { background:var(--good-bg); color:var(--good); border-color:currentColor; }
 .alert ul { margin:.4rem 0 0; padding-left:1.1rem; }
 
 /* ─── summary + stats ─────────────────────────────────────────────────── */
@@ -443,6 +444,42 @@ main { max-width:1180px; margin:0 auto; padding:1.75rem 1.5rem 5rem; }
   background:var(--panel); border:1px solid var(--line); border-radius:14px;
   padding:1.4rem; max-width:460px; box-shadow:0 20px 50px rgba(0,0,0,.3);
 }
+/* The rollback dialog has to show every product by name before anything is
+   deleted — "12 products" is not informed consent. */
+.modal.wide { max-width:640px; }
+.rb-list {
+  max-height:15rem; overflow-y:auto; margin:.8rem 0;
+  border:1px solid var(--line); border-radius:9px; background:var(--panel-2);
+}
+.rb-row {
+  display:flex; align-items:baseline; gap:.6rem; padding:.4rem .7rem;
+  border-bottom:1px solid var(--line); font-size:12.5px;
+}
+.rb-row:last-child { border-bottom:0; }
+.rb-row .sku { font-family:var(--mono, ui-monospace, monospace); font-weight:600; }
+.rb-row .why { margin-left:auto; color:var(--warn); font-size:11.5px; }
+
+/* ── the rollback report ─────────────────────────────────────────────────
+   Same vocabulary as the rest of the app — stat tiles for the counts, pills
+   for the outcome — so a destructive operation reports itself in the shape
+   people already read runs in. */
+.rb-headline { font-size:13.5px; margin:0 0 .9rem; }
+.rb-headline.warn { color:var(--warn); }
+
+.rb-group { margin-top:1.1rem; }
+.rb-group-title {
+  display:flex; align-items:center; gap:.5rem;
+  margin:0 0 .4rem; font-size:12px; font-weight:600;
+}
+/* A colour down the edge, so which list you are in survives scrolling. */
+.rb-list.ok   { border-left:3px solid var(--ok); }
+.rb-list.warn { border-left:3px solid var(--warn); }
+.rb-list.bad  { border-left:3px solid var(--bad); }
+
+/* Reasons are sentences, not labels — they get their own line rather than
+   being squeezed against the right edge. */
+.rb-row.detail { flex-direction:column; align-items:flex-start; gap:.15rem; }
+.rb-row .rb-why { color:var(--muted); font-size:11.5px; line-height:1.45; }
 .modal h3 { margin:0 0 .6rem; font-size:16px; }
 .modal p { margin:.4rem 0; font-size:13px; }
 /* however many rows carry warnings, the confirm button stays on screen */
