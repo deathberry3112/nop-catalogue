@@ -22,7 +22,7 @@ Per row, the flow and its guard:
 
 The guard matters more than it looks: several payload SKUs already exist as
 products nobody here made, and "add the payload" without it would edit a
-client's live catalogue. Ownership comes from the store when Supabase is
+client's live catalogue. Ownership comes from the store when Postgres is
 configured (shared between concurrent workers) and the local ledger otherwise.
 
 Every write step is idempotent — adding an attribute that exists returns it,
@@ -405,10 +405,10 @@ def run_batch(page, rows, *, base_url: str, email: str, password: str,
 
 
 # ---------------------------------------------------------------------------
-# The local ledger. Superseded by created_products in Supabase, kept as the
+# The local ledger. Superseded by created_products in Postgres, kept as the
 # fallback for a run with no store — but NOT safe for concurrent workers: it is
 # an unlocked read-modify-write, so two processes lose each other's entries.
-# Configure Supabase before running anything concurrently.
+# Configure DATABASE_URL (and apply schema) before running anything concurrently.
 # ---------------------------------------------------------------------------
 
 _LEDGER = Path("var/created-products.json")

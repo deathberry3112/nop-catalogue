@@ -1,16 +1,27 @@
 # Design: colour resolution, run store, observability, concurrency
 
-Status: **draft for discussion**. Nothing here is built yet.
-Scope: what to build next and why. Implementation is a separate conversation.
+Status: **mostly implemented.** Colour tiers, Postgres run store, web console,
+error taxonomy, and rollback are in the codebase. This document remains useful
+as the design rationale; treat the header below as historical framing.
 
-Three things are proposed, in dependency order:
+> Originally drafted before implementation. Part B proposed **Supabase**
+> (Postgres + PostgREST). As shipped, the store is **plain Postgres** over
+> `DATABASE_URL` / `psycopg2` (Railway Postgres in production). The DDL shape in
+> [`app/store/schema.sql`](../app/store/schema.sql) is what was built — not a
+> separate Supabase project. Multi-worker leases (Part F) are still design-only.
+
+Scope of this doc: why the store and colour pipeline look the way they do.
+Deployment topology: [`RAILWAY.md`](RAILWAY.md).
+
+Three things, in dependency order:
 
 1. **Colour resolution** becomes a three-tier pipeline (map → heuristic → LLM),
    with every resolution recorded and reusable.
-2. **A Supabase run store** replaces the local JSON ledger and the print-based
+2. **A Postgres run store** replaces the local JSON ledger and the print-based
    reporting, so a run is a queryable object rather than a terminal scrollback.
 3. **Concurrency** becomes safe, which is mostly a consequence of (2) — the
-   thing blocking it today is that "what have we created" lives in a local file.
+   thing blocking it without the DB is that "what have we created" lives in a
+   local file.
 
 The guiding constraint throughout: **this automation writes to a production
 catalogue.** A wrong SKU is expensive to find and expensive to unwind. Every
@@ -140,9 +151,10 @@ problem we currently have.
 
 ---
 
-## Part B — Supabase schema
+## Part B — Postgres schema (originally titled “Supabase schema”)
 
-Design notes before the DDL:
+The application talks to Postgres directly (`psycopg2`). The schema file is
+[`app/store/schema.sql`](../app/store/schema.sql). Design notes before the DDL:
 
 - **`runs` is the session.** Your `sessionID` is `runs.id` (uuid). Everything
   hangs off it.
@@ -450,7 +462,7 @@ Ordered by (value ÷ risk), and each phase is independently shippable.
 | Phase | Contents | Unblocks |
 |---|---|---|
 | **0** | Error taxonomy (§D). Classify at the raise site. | Every metric and UI grouping below |
-| **1** | Supabase schema + write runs/rows/steps/events. Migrate the ledger. | Observability; concurrency prerequisite |
+| **1** | Postgres schema + write runs/rows/steps/events. Migrate the ledger. | Observability; concurrency prerequisite |
 | **2** | Colour map tier 1 + seed 13 entries + record tier used | Baseline tier distribution |
 | **3** | Extract `run_batch` into `app/automation/runner.py` | Production path stops being a pytest test |
 | **4** | UI: run list, row drill-down, grouped failures | Client-visible value |
@@ -485,8 +497,9 @@ independent. It just isn't urgent on the evidence we have.
    changes the concurrency target and the retention policy materially.
 4. **Attributes beyond colour and size** — still the largest open design item,
    and it needs a sample sheet before it can be costed (see previous analysis).
-5. **Who operates the UI** — your team, or the client directly? Drives the RLS
-   model and how much nopCommerce vocabulary the UI can assume.
+5. **Who operates the UI** — your team, or the client directly? Drives how much
+   auth the web layer needs (there is none today) and how much nopCommerce
+   vocabulary the UI can assume.
 6. **One nop instance or several?** `base_url` is already threaded through
    everywhere, but per-target throttling and the SKU uniqueness scope both
    depend on the answer.

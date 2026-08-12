@@ -56,7 +56,7 @@ import logging
 from dataclasses import dataclass, field
 
 import library
-from app.store.client import get_client, store_available
+from app.store.client import fetch_all, store_available
 from pages.manage_products import ManageProductsPage
 from pages.product_page import ProductPage
 
@@ -130,14 +130,22 @@ def build_plan(run_id: str) -> Plan:
         return plan
 
     try:
-        client = get_client()
-        runs = client.table("runs").select(
-            "id,status,target_base_url,commit").eq("id", run_id).execute().data
-        claimed = client.table("created_products").select(
-            "sku,product_id,product_url,base_url,deleted_at").eq(
-            "run_id", run_id).is_("deleted_at", "null").execute().data
-        rows = client.table("run_rows").select(
-            "sku,status,product_id").eq("run_id", run_id).execute().data
+        runs = fetch_all(
+            "SELECT id, status, target_base_url, commit FROM runs WHERE id = %s",
+            (run_id,),
+        )
+        claimed = fetch_all(
+            """
+            SELECT sku, product_id, product_url, base_url, deleted_at
+              FROM created_products
+             WHERE run_id = %s AND deleted_at IS NULL
+            """,
+            (run_id,),
+        )
+        rows = fetch_all(
+            "SELECT sku, status, product_id FROM run_rows WHERE run_id = %s",
+            (run_id,),
+        )
     except Exception as exc:
         plan.blocked = f"could not read the run record: {exc}"
         return plan

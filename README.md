@@ -7,7 +7,7 @@ right child SKU on each combination.
     xlsx -> parser -> rows -> runner (Playwright) -> nopCommerce admin
                                  |                        |
                                  +-> run store            +-> report.xlsx
-                                     (Supabase)               (re-uploadable)
+                                     (Postgres)               (re-uploadable)
 
 ## Running it
 
@@ -34,17 +34,19 @@ pytest -m "live and cleanup"  # DELETES the products this automation created
 |---|---|---|
 | `ADMIN_BASE_URL` / `ADMIN_EMAIL` / `ADMIN_PASSWORD` | **yes** | nothing can run |
 | `OPENAI_API_KEY`, `OPENAI_MODEL` | no | colour tier 3 is off; unknown colours fail loudly instead of being inferred |
-| `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | no | runs are kept in memory only; the UI still works, history is lost on restart |
+| `DATABASE_URL` | no | runs are kept in memory only; the UI still works, history is lost on restart |
 
 Both integrations are optional on purpose. **Telemetry is never allowed to break
-the automation** — if Supabase is unreachable mid-run, every write is dropped
+the automation** — if Postgres is unreachable mid-run, every write is dropped
 with a warning and the products still get created.
 
 ### One manual step: the database schema
 
-PostgREST cannot run DDL, so the schema has to be applied once by hand:
+Apply the schema once against the Postgres instance (Railway Postgres, local, etc.):
 
-> Supabase dashboard → SQL Editor → paste **`app/store/schema.sql`** → Run
+```bash
+python sql.py app/store/schema.sql
+```
 
 It is idempotent, so re-running it after a change is safe. Until it is applied
 the header shows `store: schema missing` and runs simply are not recorded.
@@ -68,7 +70,7 @@ Per row, with the guard that matters:
 
 Several catalogue SKUs already exist as products nobody here made. Every product
 this automation creates is recorded (`created_products`, or `var/created-products.json`
-without Supabase) and that record is the only thing the cleanup path will delete.
+without Postgres) and that record is the only thing the cleanup path will delete.
 
 Every write step is idempotent, so a run that dies halfway can simply be run
 again — and the report it produces can be re-uploaded to finish the batch.
@@ -121,7 +123,8 @@ usually two problems.
 ## Deploying
 
 One container serves both the console and the API, so there is one thing to
-deploy, one origin, and no CORS to configure.
+deploy, one origin, and no CORS to configure. Full Railway inventory and
+runbook: [`docs/RAILWAY.md`](docs/RAILWAY.md).
 
     Dockerfile -> Railway -> https://<service>.up.railway.app
 
@@ -139,13 +142,13 @@ it cannot, so a broken browser stops the deploy instead of somebody's upload.
 | Setting | Value |
 |---|---|
 | Build | Dockerfile, via `railway.json` |
-| Healthcheck | `/api/ping` — liveness only, so an unreachable Supabase cannot fail a deploy |
-| Variables | everything in `.env.example`; only the `ADMIN_*` block is required |
+| Healthcheck | `/api/ping` — liveness only, so an unreachable Postgres cannot fail a deploy |
+| Variables | everything in `.env.example`; only the `ADMIN_*` block is required. Link Railway Postgres and set `DATABASE_URL=${{Postgres.DATABASE_URL}}` |
 | Volume | mount at `/app/var` to keep reports and the local ledger across deploys |
 
-Every push to the watched branch rebuilds and redeploys through Railway's
-GitHub integration. There is no separate front-end pipeline, because there is
-no separate front end.
+How deploys are triggered depends on how the Railway service is wired: see
+[`docs/RAILWAY.md`](docs/RAILWAY.md). There is no separate front-end pipeline,
+because there is no separate front end.
 
 Two things to know before giving anyone the URL:
 
@@ -153,7 +156,7 @@ Two things to know before giving anyone the URL:
   public admin tool, and `ADMIN_*` being set server-side means a visitor does
   not need credentials of their own to start a run.
 * Without a volume `var/` is ephemeral: run reports and the local
-  created-products ledger do not survive a redeploy. Supabase covers the run
+  created-products ledger do not survive a redeploy. Postgres covers the run
   history and the ledger; the report `.xlsx` files have no remote store.
 
 ## Layout
@@ -164,7 +167,7 @@ app/
   errors.py        the error taxonomy + retry policy
   parser.py        xlsx -> rows (refuses columns it does not understand)
   colour/          the three-tier resolver + the curated map
-  store/           Supabase run store; schema.sql lives here
+  store/           Postgres run store; schema.sql lives here
   automation/      run_batch — the runner main.py drives
   web/             FastAPI API + the upload console
 main.py            entry point: owns the browser, refuses unsafe runs
@@ -172,7 +175,9 @@ library.py         Playwright helpers (steps, retries, nop widgets)
 pages/             page objects: landing, manage products, product form
 combination_skus.py  splits child SKUs into (colour, size)
 xlsxCreator.py     rows + summary -> the re-uploadable report
-docs/DESIGN.md     the design this was built from, and what is still open
+docs/DESIGN.md     design notes (colour, store, concurrency); some parts shipped
+docs/RAILWAY.md    as-built Railway + Postgres production configuration
+docs/DEPLOYMENT-PLAN.md  why one container / Playwright image choices
 ```
 
 ## Known gaps
@@ -181,6 +186,6 @@ docs/DESIGN.md     the design this was built from, and what is still open
 * **Attributes beyond colour and size are not modelled.** A workbook with a
   third attribute column is *rejected* rather than silently part-created — see
   `docs/DESIGN.md` for what supporting it would take.
-* **Concurrency needs Supabase.** The local JSON ledger is an unlocked
+* **Concurrency needs Postgres.** The local JSON ledger is an unlocked
   read-modify-write, so two workers lose each other's entries. `created_products`
   fixes this; apply the schema before running anything concurrently.

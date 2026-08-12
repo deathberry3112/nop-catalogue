@@ -146,7 +146,7 @@ class SwatchMap:
     """The curated colour -> swatch table, cached for the life of the process.
 
     Same shape and same trade as ColourMap in app/colour/store.py: SEED, plus a
-    local JSON mirror, plus Supabase when it is configured. Losing the database
+    local JSON mirror, plus Postgres when it is configured. Losing the database
     costs entries, never correctness — an entry that is not there resolves by
     label or not at all.
     """
@@ -179,10 +179,10 @@ class SwatchMap:
         if not settings().store_enabled:
             return []
         try:
-            from app.store.client import get_client
-            rows = get_client().table("colour_swatches").select("*").execute().data
+            from app.store.client import fetch_all
+            rows = fetch_all("SELECT * FROM colour_swatches")
         except Exception as exc:            # never let the DB stop a run
-            log.warning("could not load the swatch map from Supabase: %s", exc)
+            log.warning("could not load the swatch map from Postgres: %s", exc)
             return []
         return [self._entry(r) for r in rows]
 

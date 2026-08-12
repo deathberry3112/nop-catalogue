@@ -5,8 +5,8 @@ so there is exactly one place that knows where secrets live and exactly one
 place to change when they move to a secrets manager.
 
 Every integration is OPTIONAL by design. No OpenAI key means tier 3 is off and
-colour resolution behaves exactly as it did before it existed. No Supabase
-credentials means runs are not recorded. Neither is allowed to stop a run: the
+colour resolution behaves exactly as it did before it existed. No DATABASE_URL
+means runs are not recorded. Neither is allowed to stop a run: the
 automation's job is to add products, and it must not become undeployable
 because a telemetry backend is down.
 """
@@ -57,12 +57,9 @@ class Settings:
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
 
-    supabase_url: str = ""
-    supabase_service_key: str = ""
-    #: Postgres wire-protocol URL, used only by sql.py. The application never
-    #: touches it — PostgREST covers everything it does — but PostgREST cannot
-    #: run DDL, so schema changes need a real database connection.
-    supabase_db_url: str = ""
+    #: Postgres wire-protocol URL (Railway injects this when Postgres is linked).
+    #: Used by the run store and by sql.py for DDL.
+    database_url: str = ""
 
     # --- capability probes: what is actually wired up right now -----------
 
@@ -72,7 +69,7 @@ class Settings:
 
     @property
     def store_enabled(self) -> bool:
-        return bool(self.supabase_url and self.supabase_service_key)
+        return bool(self.database_url)
 
 
 @lru_cache(maxsize=1)
@@ -83,7 +80,5 @@ def settings() -> Settings:
         admin_password=os.environ.get("ADMIN_PASSWORD", ""),
         openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
         openai_model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-        supabase_url=os.environ.get("SUPABASE_URL", ""),
-        supabase_service_key=os.environ.get("SUPABASE_SERVICE_KEY", ""),
-        supabase_db_url=os.environ.get("SUPABASE_DB_URL", ""),
+        database_url=os.environ.get("DATABASE_URL", ""),
     )

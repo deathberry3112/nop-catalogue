@@ -18,7 +18,7 @@ on a vest sheet and a flat map hands back HLE — a SKU belonging to no product.
 Lookup order is (scope, colour) then ('global', colour). Scope comes from the
 row's source_sheet, which the payload already carries.
 
-STORAGE: Supabase when configured, a local JSON file otherwise, and the
+STORAGE: Postgres when configured, a local JSON file otherwise, and the
 built-in SEED when neither has an answer. All three are the same shape, and the
 automation runs identically against any of them — losing the database costs
 observability, never correctness.
@@ -127,10 +127,10 @@ class ColourMap:
         if not settings().store_enabled:
             return []
         try:
-            from app.store.client import get_client
-            rows = get_client().table("colour_codes").select("*").execute().data
+            from app.store.client import fetch_all
+            rows = fetch_all("SELECT * FROM colour_codes")
         except Exception as exc:                # never let the DB stop a run
-            log.warning("could not load colour map from Supabase: %s", exc)
+            log.warning("could not load colour map from Postgres: %s", exc)
             return []
         return [Entry(r["scope"], r.get("colour_raw", ""), r["colour_key"],
                       r["code"], r.get("source", "human"),
@@ -184,7 +184,7 @@ class ColourMap:
         self._write_remote(entry, confidence)
 
     def _write_local(self) -> None:
-        """Mirror non-seed entries to disk so a run without Supabase still
+        """Mirror non-seed entries to disk so a run without Postgres still
         accumulates what it learned."""
         try:
             LOCAL_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -202,16 +202,22 @@ class ColourMap:
         if not settings().store_enabled:
             return
         try:
-            from app.store.client import get_client
-            get_client().table("colour_codes").upsert({
-                "scope": entry.scope,
-                "colour_raw": entry.colour_raw,
-                "colour_key": entry.colour_key,
-                "code": entry.code,
-                "source": entry.source,
-                "verified": entry.verified,
-                "confidence": confidence,
-            }, on_conflict="scope,colour_key").execute()
+            from app.store.client import execute
+            execute(
+                """
+                INSERT INTO colour_codes (
+                  scope, colour_raw, colour_key, code, source, verified, confidence
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (scope, colour_key) DO UPDATE SET
+                  colour_raw = EXCLUDED.colour_raw,
+                  code       = EXCLUDED.code,
+                  source     = EXCLUDED.source,
+                  verified   = EXCLUDED.verified,
+                  confidence = EXCLUDED.confidence
+                """,
+                (entry.scope, entry.colour_raw, entry.colour_key, entry.code,
+                 entry.source, entry.verified, confidence),
+            )
         except Exception as exc:
             log.warning("could not persist colour %s/%s: %s",
                         entry.scope, entry.colour_key, exc)

@@ -1,6 +1,7 @@
 # secrets and local state — never commit
 .env
 var/
+.railway/
 
 # generated
 __pycache__/

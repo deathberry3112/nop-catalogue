@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
-"""Run SQL against the Supabase database from the command line.
+"""Run SQL against the Postgres database from the command line.
 
     python sql.py "select count(*) from runs"      one statement
     python sql.py app/store/schema.sql             a file
     python sql.py < some.sql                       stdin
 
-This exists because PostgREST — what the application talks to — cannot run
-DDL. `CREATE TABLE` has no verb in its HTTP vocabulary, so anything structural
-has to go over the Postgres wire protocol instead, which needs the database
-password rather than the API key.
+Reads DATABASE_URL from the environment / .env (gitignored). On Railway that
+is the variable attached when you link the Postgres plugin:
 
-Reads SUPABASE_DB_URL from .env (gitignored). Get it from
-Supabase → Project Settings → Database → Connection string → URI:
-
-    postgresql://postgres:<password>@db.<ref>.supabase.co:5432/postgres
+    DATABASE_URL=postgresql://user:pass@host:5432/railway
 
 EVERYTHING RUNS IN ONE TRANSACTION and commits only if the whole input
 succeeded. A schema file that fails on statement nine leaves nothing behind
@@ -31,14 +26,14 @@ from app.config import ROOT, settings   # loads .env as a side effect
 
 
 def _connection_string() -> str:
-    url = settings().supabase_db_url
+    url = settings().database_url
     if not url:
         sys.exit(
-            "SUPABASE_DB_URL is not set.\n"
-            "Add it to .env — Supabase → Project Settings → Database →\n"
-            "Connection string → URI, which looks like:\n"
-            "  SUPABASE_DB_URL=postgresql://postgres:<password>"
-            "@db.<ref>.supabase.co:5432/postgres")
+            "DATABASE_URL is not set.\n"
+            "Add it to .env, or link Railway Postgres so the platform injects it.\n"
+            "  DATABASE_URL=postgresql://user:pass@host:5432/railway")
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
     return url
 
 

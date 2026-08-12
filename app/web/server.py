@@ -7,11 +7,9 @@ The API is deliberately thin. It parses, it starts a run on a worker thread, and
 it hands back snapshots — every decision about what a run does lives in
 app/automation, and every decision about what gets recorded lives in app/store.
 
-SECURITY POSTURE, because this handles admin credentials and a service key:
-  * the Supabase SERVICE key never leaves the backend — the front end talks to
-    this API only, never to Supabase directly. A service key bypasses RLS, so
-    putting it in a browser would hand the database to anyone who opens
-    devtools.
+SECURITY POSTURE, because this handles admin credentials and a database:
+  * DATABASE_URL stays on the server — the front end talks to this API only,
+    never to Postgres directly.
   * the admin password is never serialised into a response. /api/health reports
     presence, never values.
 
@@ -118,7 +116,7 @@ def ping() -> dict:
     """Liveness only: is this process up and serving? No I/O, no dependencies.
 
     Separate from /api/health because health() calls store.healthy(), which
-    makes a live Supabase round-trip. A platform healthcheck pointed at that
+    makes a live Postgres round-trip. A platform healthcheck pointed at that
     would let a slow or unreachable telemetry backend fail a deploy — the same
     inversion this codebase refuses everywhere else: telemetry is never allowed
     to break the thing it observes.

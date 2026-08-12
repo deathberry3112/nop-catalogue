@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 @pytest.fixture(autouse=True)
 def _isolate_the_map(tmp_path, monkeypatch):
-    """SEED only — no local file, no Supabase. Without this the tests read
+    """SEED only — no local file, no remote store. Without this the tests read
     whatever the developer's var/ happens to hold and pass or fail by accident."""
     monkeypatch.setattr(sw, "LOCAL_PATH", tmp_path / "colour-swatches.json")
     monkeypatch.setattr(sw.MAP, "_entries", None)

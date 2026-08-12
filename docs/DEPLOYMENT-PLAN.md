@@ -1,9 +1,15 @@
 # Deployment — as built
 
-One container serves the console and the API. That is the whole architecture,
-and every other decision here follows from it.
+One container serves the console and the API. Railway Postgres holds the run
+store. That is the whole architecture, and every other decision here follows
+from it.
 
-    GitHub push -> Railway builds Dockerfile -> container serves UI + API
+    Dockerfile -> Railway service `app` -> UI + API + Playwright
+                -> DATABASE_URL -> Railway Postgres (private hostname)
+
+**Operational inventory, variables, schema apply, volumes, and GitHub
+auto-deploy:** see [`RAILWAY.md`](RAILWAY.md). This file is the rationale for the
+container and Playwright choices, not the runbook.
 
 ## Why there is no CDN, no bucket, and no second pipeline
 
@@ -63,7 +69,7 @@ unchanged and the container differs only by environment: the Dockerfile sets
 `HOST=0.0.0.0` and Railway injects `PORT`.
 
 The healthcheck is `/api/ping`, which does no I/O. It is deliberately not
-`/api/health`, because that makes a live Supabase round-trip — pointing a
+`/api/health`, because that makes a live Postgres round-trip — pointing a
 deploy gate at it would let a telemetry outage block a deploy, inverting the
 rule the rest of this codebase follows.
 
@@ -77,24 +83,32 @@ shipped, the middleware never fires.
 
 ## CI/CD
 
-Railway's GitHub integration watches a branch and redeploys on every push to
-it, including merge commits. Because the container carries the console, that
-single trigger deploys everything. There is no second pipeline and nothing to
-invalidate.
+[`railway.json`](../railway.json) tells Railway to build the Dockerfile and
+healthcheck `/api/ping`.
+
+**On project `nop-commerce-catalogue`:** connect the `app` service to the GitHub
+repo (see [`RAILWAY.md`](RAILWAY.md) § GitHub auto-deploy). Until that source is
+connected, deploys are CLI / dashboard only — not push-to-deploy.
+
+When a GitHub source *is* connected to branch `main`, Railway rebuilds `app` on
+pushes/merges to that branch. Postgres data is unchanged by those deploys. The
+container still carries the console, so that single trigger deploys UI + API +
+RPA together. There is no second front-end pipeline.
 
 ## What is not solved
 
 * **No authentication.** Unchanged from before deployment, and now reachable
-  from anywhere. See Known gaps in the README.
-* **`var/` is ephemeral.** Run reports, the local colour map, and the
-  created-products ledger all live under `ROOT/var` and reset on redeploy
-  unless a Railway volume is mounted at `/app/var`. Supabase covers the run
-  history and the ledger; the report `.xlsx` files have no remote store.
+  from anywhere if a public domain exists. See Known gaps in the README and
+  Security in [`RAILWAY.md`](RAILWAY.md).
+* **`var/` needs a volume.** Run reports and local JSON mirrors live under
+  `ROOT/var` and reset on redeploy unless a Railway volume is mounted at
+  `/app/var` (this project mounts `app-volume` there). Postgres covers run history
+  and the `created_products` ledger; report `.xlsx` files have no object store.
 * **No horizontal scaling.** `RunManager` is in-process by design, and Railway
   volumes are incompatible with replicas anyway. `MAX_CONCURRENT = 4` permits
   four simultaneous Chromium instances in one container; size the plan for it.
 
-## Files this added
+## Files that define the deploy
 
 | File | Purpose |
 |---|---|
@@ -103,11 +117,14 @@ invalidate.
 | `railway.json` | Dockerfile builder, `/api/ping` healthcheck, restart policy |
 | `.env.example` | every variable, documented, no values |
 | `app/web/server.py` | env-driven bind, `/api/ping`, env-driven CORS |
-| `requirements.txt` | `playwright` pinned to the image version |
-| `README.md` | the Deploying section |
+| `app/store/client.py` | Postgres pool + SQL helpers (`DATABASE_URL`) |
+| `app/store/schema.sql` | Idempotent DDL for the run store |
+| `requirements.txt` | `playwright` pin + `psycopg2-binary` |
+| `docs/RAILWAY.md` | As-built Railway inventory and runbook |
+| `README.md` | Deploying / Configuration sections |
 
 ## Rollback
 
-Every change is additive and the defaults are the previous behaviour, so
-reverting the commits restores the original local run exactly. On the platform,
-redeploy any earlier deployment from the Railway dashboard.
+On the platform, redeploy any earlier deployment from the Railway dashboard.
+Locally, reverting the Postgres-client commits restores the previous
+Supabase-oriented code; there is no automatic dual-write to both backends.
