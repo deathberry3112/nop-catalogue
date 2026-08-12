@@ -14,55 +14,38 @@ import pytest
 from app import rollback
 
 
-class FakeTable:
-    def __init__(self, rows):
-        self._rows = rows
-        self._filters = []
-
-    def select(self, *_a, **_k):
-        return self
-
-    def eq(self, column, value):
-        self._filters.append(("eq", column, value))
-        return self
-
-    def is_(self, column, value):
-        self._filters.append(("is", column, value))
-        return self
-
-    def execute(self):
-        rows = self._rows
-        for kind, column, value in self._filters:
-            if kind == "eq":
-                rows = [r for r in rows if str(r.get(column)) == str(value)]
-            elif kind == "is" and value == "null":
-                rows = [r for r in rows if r.get(column) is None]
-        return type("Result", (), {"data": rows})()
-
-
-class FakeClient:
-    def __init__(self, **tables):
-        self.tables = tables
-
-    def table(self, name):
-        return FakeTable([dict(r) for r in self.tables.get(name, [])])
-
-
 RUN = "11111111-1111-1111-1111-111111111111"
 STORE_URL = "https://shop.example.com/admin"
 
 
 def wire(monkeypatch, *, runs=None, claimed=None, rows=None, available=True):
-    """Both child tables are queried with .eq("run_id", ...), so the fixtures
-    belong to RUN unless a test deliberately says otherwise."""
-    client = FakeClient(
-        runs=runs if runs is not None else [
-            {"id": RUN, "status": "succeeded", "target_base_url": STORE_URL,
-             "commit": True}],
-        created_products=[{"run_id": RUN, **c} for c in (claimed or [])],
-        run_rows=[{"run_id": RUN, **r} for r in (rows or [])])
+    """Fake fetch_all so build_plan never needs a live database.
+
+    Both child tables are queried with WHERE run_id = %s, so the fixtures
+    belong to RUN unless a test deliberately says otherwise.
+    """
+    runs_data = runs if runs is not None else [
+        {"id": RUN, "status": "succeeded", "target_base_url": STORE_URL,
+         "commit": True}]
+    claimed_data = [{"run_id": RUN, **c} for c in (claimed or [])]
+    rows_data = [{"run_id": RUN, **r} for r in (rows or [])]
+
+    def fake_fetch_all(sql, params=None):
+        sql_l = " ".join(sql.lower().split())
+        run_id = params[0] if params else None
+        if "from runs" in sql_l:
+            return [r for r in runs_data if r["id"] == run_id]
+        if "from created_products" in sql_l:
+            out = [r for r in claimed_data if r["run_id"] == run_id]
+            if "deleted_at is null" in sql_l:
+                out = [r for r in out if r.get("deleted_at") is None]
+            return out
+        if "from run_rows" in sql_l:
+            return [r for r in rows_data if r["run_id"] == run_id]
+        return []
+
     monkeypatch.setattr(rollback, "store_available", lambda: available)
-    monkeypatch.setattr(rollback, "get_client", lambda: client)
+    monkeypatch.setattr(rollback, "fetch_all", fake_fetch_all)
 
 
 def claim(sku, product_id="100", base_url=STORE_URL, deleted_at=None):
@@ -156,13 +139,29 @@ def test_a_claim_against_a_different_store_is_excluded(monkeypatch):
 def test_another_runs_products_are_not_in_this_plan(monkeypatch):
     """The filter is run_id. A product created by a different run has its own
     rollback and must not appear in this one."""
-    client = FakeClient(
-        runs=[{"id": RUN, "status": "succeeded", "target_base_url": STORE_URL}],
-        created_products=[dict(claim("MINE"), run_id=RUN),
-                          dict(claim("THEIRS"), run_id="22222222-2222-2222-2222-222222222222")],
-        run_rows=[dict(row("MINE"), run_id=RUN)])
+    other = "22222222-2222-2222-2222-222222222222"
+    runs = [{"id": RUN, "status": "succeeded", "target_base_url": STORE_URL,
+             "commit": True}]
+    claimed = [dict(claim("MINE"), run_id=RUN),
+               dict(claim("THEIRS"), run_id=other)]
+    rows = [dict(row("MINE"), run_id=RUN)]
+
+    def fake_fetch_all(sql, params=None):
+        sql_l = " ".join(sql.lower().split())
+        run_id = params[0] if params else None
+        if "from runs" in sql_l:
+            return [r for r in runs if r["id"] == run_id]
+        if "from created_products" in sql_l:
+            out = [r for r in claimed if r["run_id"] == run_id]
+            if "deleted_at is null" in sql_l:
+                out = [r for r in out if r.get("deleted_at") is None]
+            return out
+        if "from run_rows" in sql_l:
+            return [r for r in rows if r["run_id"] == run_id]
+        return []
+
     monkeypatch.setattr(rollback, "store_available", lambda: True)
-    monkeypatch.setattr(rollback, "get_client", lambda: client)
+    monkeypatch.setattr(rollback, "fetch_all", fake_fetch_all)
     assert rollback.build_plan(RUN).skus == ["MINE"]
 
 

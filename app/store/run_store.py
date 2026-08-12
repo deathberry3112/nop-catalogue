@@ -9,11 +9,11 @@
 THE RULE THIS MODULE IS BUILT ON: telemetry must never break the automation.
 Every write is wrapped in _safe(). A dropped log line costs observability; an
 exception thrown from a logging call costs a half-added product in a live
-catalogue. So Supabase being down, misconfigured, or entirely absent degrades
+catalogue. So Postgres being down, misconfigured, or entirely absent degrades
 this class to an in-memory recorder and the run proceeds unchanged.
 
 That is also why the in-memory mirror is not a debug convenience: it is what
-the web layer polls for live progress, so the UI works before Supabase is
+the web layer polls for live progress, so the UI works before Postgres is
 configured and keeps working if it goes away mid-run.
 """
 
@@ -30,8 +30,10 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 
-from app.errors import ErrorClass, classify
-from app.store.client import get_client, store_available
+from psycopg2.extras import Json
+
+from app.errors import classify
+from app.store.client import execute, fetch_all, store_available
 
 log = logging.getLogger("store.run")
 
@@ -45,7 +47,7 @@ def _worker_id() -> str:
 
 
 class RunStore:
-    """One run's records, mirrored in memory and (when configured) Supabase."""
+    """One run's records, mirrored in memory and (when configured) Postgres."""
 
     def __init__(self, run_id: str, *, remote: bool):
         self.run_id = run_id
@@ -54,7 +56,7 @@ class RunStore:
         self._started = time.monotonic()
 
         # The in-memory mirror the UI polls. Kept complete enough that the
-        # front end never needs to know whether Supabase is configured.
+        # front end never needs to know whether Postgres is configured.
         self.state: dict[str, Any] = {
             "id": run_id,
             "status": "queued",
@@ -87,19 +89,19 @@ class RunStore:
                            total_rows=len(rows), source_filename=filename,
                            target_base_url=base_url, commit=commit)
 
-        store._safe(lambda: get_client().table("runs").insert({
-            "id": run_id,
-            "status": "running",
-            "triggered_by": triggered_by,
-            "source_filename": filename or None,
-            "source_sha256": digest,
-            "target_base_url": base_url,
-            "commit": commit,
-            "options": options or {},
-            "worker_id": _worker_id(),
-            "total_rows": len(rows),
-            "started_at": _now(),
-        }).execute())
+        started = _now()
+        store._safe(lambda: execute(
+            """
+            INSERT INTO runs (
+              id, status, triggered_by, source_filename, source_sha256,
+              target_base_url, commit, options, worker_id, total_rows, started_at
+            ) VALUES (
+              %s, 'running', %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            """,
+            (run_id, triggered_by, filename or None, digest, base_url, commit,
+             Json(options or {}), _worker_id(), len(rows), started),
+        ))
 
         log.info("run %s started — %d row(s), commit=%s", run_id, len(rows), commit)
         return store
@@ -128,10 +130,13 @@ class RunStore:
         with self._lock:
             self.state["events"].append(entry)
             del self.state["events"][:-500]      # the UI only ever shows the tail
-        self._safe(lambda: get_client().table("events").insert({
-            "run_id": self.run_id, "row_id": row_id, "step_id": step_id,
-            "level": level, "message": message[:2000], "data": data or {},
-        }).execute(), what="event")
+        self._safe(lambda: execute(
+            """
+            INSERT INTO events (run_id, row_id, step_id, level, message, data)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (self.run_id, row_id, step_id, level, message[:2000], Json(data or {})),
+        ), what="event")
 
     # --- rows ------------------------------------------------------------
 
@@ -148,11 +153,16 @@ class RunStore:
             self.state["rows"][row_id] = state
             self.state["order"].append(row_id)
 
-        self._safe(lambda: get_client().table("run_rows").insert({
-            "id": row_id, "run_id": self.run_id, "sku": row.get("sku"),
-            "source_sheet": row.get("source_sheet"), "row_index": index,
-            "status": "running", "payload": row, "started_at": _now(),
-        }).execute(), what="row insert")
+        started = _now()
+        self._safe(lambda: execute(
+            """
+            INSERT INTO run_rows (
+              id, run_id, sku, source_sheet, row_index, status, payload, started_at
+            ) VALUES (%s, %s, %s, %s, %s, 'running', %s, %s)
+            """,
+            (row_id, self.run_id, row.get("sku"), row.get("source_sheet"),
+             index, Json(row), started),
+        ), what="row insert")
         return row_id
 
     def row_finished(self, row_id: str, *, status: str, error: str | None = None,
@@ -161,7 +171,6 @@ class RunStore:
                      colour_tiers: dict | None = None) -> None:
         with self._lock:
             state = self.state["rows"].get(row_id, {})
-            started = state.get("started_at")
             state.update(status=status, error=error, error_class=error_class,
                          product_url=product_url, finished_at=_now(),
                          colour_tiers=colour_tiers or {})
@@ -170,12 +179,20 @@ class RunStore:
                     totals = self.state["colour_tiers"]
                     totals[tier] = totals.get(tier, 0) + count
 
-        self._safe(lambda: get_client().table("run_rows").update({
-            "status": status, "error": (error or None) and error[:2000],
-            "error_class": error_class, "product_url": product_url,
-            "product_id": product_id, "finished_at": _now(),
-            "colour_tiers": colour_tiers or {},
-        }).eq("id", row_id).execute(), what="row update")
+        finished = _now()
+        err = (error or None) and error[:2000]
+        tiers = colour_tiers or {}
+        self._safe(lambda: execute(
+            """
+            UPDATE run_rows SET
+              status = %s, error = %s, error_class = %s,
+              product_url = %s, product_id = %s, finished_at = %s,
+              colour_tiers = %s
+            WHERE id = %s
+            """,
+            (status, err, error_class, product_url, product_id, finished,
+             Json(tiers), row_id),
+        ), what="row update")
 
     # --- steps -----------------------------------------------------------
 
@@ -215,10 +232,17 @@ class RunStore:
             if row is not None:
                 row["steps"].append(record)
 
-        self._safe(lambda: get_client().table("row_steps").insert({
-            **record, "run_id": self.run_id, "row_id": row_id,
-            "error": (error or None) and error[:2000],
-        }).execute(), what="step insert")
+        err = (error or None) and error[:2000]
+        self._safe(lambda: execute(
+            """
+            INSERT INTO row_steps (
+              id, run_id, row_id, name, status, attempt, error_class, error,
+              detail, started_at, duration_ms
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (step_id, self.run_id, row_id, name, status, attempt,
+             error_class, err, Json(detail), started_at, duration_ms),
+        ), what="step insert")
 
     # --- colour resolution audit -----------------------------------------
 
@@ -232,20 +256,22 @@ class RunStore:
             self.state["llm_cost_usd"] = round(
                 self.state["llm_cost_usd"] + result.cost_usd, 6)
 
-        self._safe(lambda: get_client().table("llm_inferences").insert({
-            "run_id": self.run_id, "row_id": row_id, "scope": resolution.scope,
-            "model": result.model or "unknown",
-            "input": {"colours": list(result.assignments)},
-            "output": {"assignments": result.assignments,
-                       "confidence": result.confidence,
-                       "reasoning": result.reasoning},
-            "accepted": bool(resolution.verified),
-            "reject_reason": resolution.error,
-            "prompt_tokens": result.prompt_tokens,
-            "completion_tokens": result.completion_tokens,
-            "cost_usd": result.cost_usd,
-            "latency_ms": result.latency_ms,
-        }).execute(), what="llm audit")
+        self._safe(lambda: execute(
+            """
+            INSERT INTO llm_inferences (
+              run_id, row_id, scope, model, input, output, accepted,
+              reject_reason, prompt_tokens, completion_tokens, cost_usd, latency_ms
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (self.run_id, row_id, resolution.scope, result.model or "unknown",
+             Json({"colours": list(result.assignments)}),
+             Json({"assignments": result.assignments,
+                   "confidence": result.confidence,
+                   "reasoning": result.reasoning}),
+             bool(resolution.verified), resolution.error,
+             result.prompt_tokens, result.completion_tokens,
+             result.cost_usd, result.latency_ms),
+        ), what="llm audit")
 
     # --- created products (the concurrency-safe ledger) -------------------
 
@@ -257,17 +283,25 @@ class RunStore:
         is what makes two concurrent workers safe: the second insert conflicts
         instead of both believing they own the product.
         """
-        self._safe(lambda: get_client().table("created_products").upsert({
-            "base_url": base_url, "sku": sku, "product_url": product_url,
-            "product_id": product_id, "run_id": self.run_id,
-            # Clearing this is not tidiness. The row is reused per (base_url,
-            # sku), so a SKU that was rolled back and then created again
-            # inherits the old tombstone unless it is explicitly cleared — and
-            # a claim that says "deleted" while the product exists is invisible
-            # to owned_skus(), which silently disarms the ownership guard, and
-            # to the rollback, which then reports it created nothing.
-            "deleted_at": None,
-        }, on_conflict="base_url,sku").execute(), what="claim")
+        self._safe(lambda: execute(
+            """
+            INSERT INTO created_products (
+              base_url, sku, product_url, product_id, run_id, deleted_at
+            ) VALUES (%s, %s, %s, %s, %s, NULL)
+            ON CONFLICT (base_url, sku) DO UPDATE SET
+              product_url = EXCLUDED.product_url,
+              product_id  = EXCLUDED.product_id,
+              run_id      = EXCLUDED.run_id,
+              -- Clearing this is not tidiness. The row is reused per (base_url,
+              -- sku), so a SKU that was rolled back and then created again
+              -- inherits the old tombstone unless it is explicitly cleared — and
+              -- a claim that says "deleted" while the product exists is invisible
+              -- to owned_skus(), which silently disarms the ownership guard, and
+              -- to the rollback, which then reports it created nothing.
+              deleted_at  = NULL
+            """,
+            (base_url, sku, product_url, product_id, self.run_id),
+        ), what="claim")
 
     def release_product(self, base_url: str, sku: str) -> None:
         """Retire an ownership claim — the product is gone from the catalogue.
@@ -278,17 +312,26 @@ class RunStore:
         which would let a later run treat a SKU the client has since created
         for themselves as ours and edit it.
         """
-        self._safe(lambda: get_client().table("created_products").update({
-            "deleted_at": _now(),
-        }).eq("base_url", base_url).eq("sku", sku)
-            .is_("deleted_at", "null").execute(), what="release")
+        when = _now()
+        self._safe(lambda: execute(
+            """
+            UPDATE created_products
+               SET deleted_at = %s
+             WHERE base_url = %s AND sku = %s AND deleted_at IS NULL
+            """,
+            (when, base_url, sku),
+        ), what="release")
 
     def owned_skus(self, base_url: str) -> set[str]:
         """SKUs this automation created on that store, across all runs."""
-        result = self._safe(lambda: get_client().table("created_products")
-                            .select("sku").eq("base_url", base_url)
-                            .is_("deleted_at", "null").execute(), what="owned")
-        return {r["sku"] for r in (result.data if result else [])}
+        rows = self._safe(lambda: fetch_all(
+            """
+            SELECT sku FROM created_products
+             WHERE base_url = %s AND deleted_at IS NULL
+            """,
+            (base_url,),
+        ), what="owned")
+        return {r["sku"] for r in (rows or [])}
 
     # --- finishing -------------------------------------------------------
 
@@ -314,10 +357,16 @@ class RunStore:
                               finished_at=_now(), duration_ms=duration_ms)
             snapshot = dict(self.state)
 
-        self._safe(lambda: get_client().table("runs").update({
-            "status": status, "counts": counts, "error": error,
-            "finished_at": _now(), "duration_ms": duration_ms,
-        }).eq("id", self.run_id).execute(), what="run finish")
+        finished = _now()
+        self._safe(lambda: execute(
+            """
+            UPDATE runs SET
+              status = %s, counts = %s, error = %s,
+              finished_at = %s, duration_ms = %s
+            WHERE id = %s
+            """,
+            (status, Json(counts), error, finished, duration_ms, self.run_id),
+        ), what="run finish")
 
         log.info("run %s %s in %dms — %s", self.run_id, status, duration_ms, counts)
         return snapshot

@@ -1,5 +1,7 @@
 -- nopCommerce automation — run store
--- Apply in the Supabase SQL editor. Idempotent: safe to re-run.
+-- Apply once against Railway Postgres (or any Postgres): 
+--   python sql.py app/store/schema.sql
+-- Idempotent: safe to re-run.
 --
 -- Grains, deliberately separate: run -> row -> step.
 --   Most UI questions are answered at row grain; most debugging happens at
@@ -8,6 +10,8 @@
 -- events is append-only NARRATIVE and is not the source of truth. Status lives
 -- in typed columns so "show me every failed row" stays an indexed query rather
 -- than a log scan.
+
+create extension if not exists pgcrypto;
 
 -- ─── enums ──────────────────────────────────────────────────────────────────
 do $$ begin

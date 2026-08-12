@@ -12,4 +12,4 @@ python-multipart>=0.0.9
 
 # optional integrations — the app runs without either, with reduced capability
 openai>=1.30          # colour resolution tier 3
-supabase>=2.4         # the run store / observability
+psycopg2-binary>=2.9  # the run store / observability (Railway Postgres)
