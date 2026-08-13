@@ -398,3 +398,174 @@ class RunStore:
                 "rows": rows,
                 "events": self.state["events"][-80:],
             }
+
+
+# ---------------------------------------------------------------------------
+# Reading runs back out.
+#
+# RunStore is the WRITE side and its in-memory mirror only lives as long as the
+# process. These read the same records back from Postgres, in the shape the web
+# layer already polls, so a run survives a restart instead of vanishing from
+# the console while every row of it is still in the database.
+#
+# The shape is RunStore.snapshot()'s, deliberately: the front end must not be
+# able to tell whether a run is live in memory or reassembled from the store.
+# ---------------------------------------------------------------------------
+
+def _iso(value: Any) -> Any:
+    """Timestamps as ISO strings, matching what the in-memory mirror holds."""
+    return value.isoformat() if isinstance(value, datetime) else value
+
+
+def _summary(run: dict, *, completed: int = 0) -> dict:
+    return {
+        "id": str(run["id"]),
+        "status": run.get("status"),
+        "source_filename": run.get("source_filename") or "",
+        "commit": bool(run.get("commit")),
+        "target_base_url": run.get("target_base_url") or "",
+        "total_rows": run.get("total_rows") or 0,
+        "completed": completed,
+        "counts": run.get("counts") or {},
+        "colour_tiers": {},
+        "llm_cost_usd": 0.0,
+        "error": run.get("error"),
+        "started_at": _iso(run.get("started_at")),
+        "finished_at": _iso(run.get("finished_at")),
+        "remote": True,
+    }
+
+
+def recent_runs(limit: int = 50) -> list[dict]:
+    """Run summaries from the store, newest first — no rows, no events.
+
+    Summary only, like RunManager.list(): a run list that carried every row of
+    every run would grow without bound and is not what the screen shows.
+    """
+    if not store_available():
+        return []
+    try:
+        runs = fetch_all(
+            """
+            SELECT id, status, source_filename, commit, target_base_url,
+                   total_rows, counts, error, started_at, finished_at
+              FROM runs
+             ORDER BY created_at DESC
+             LIMIT %s
+            """,
+            (limit,),
+        )
+    except Exception as exc:
+        log.warning("could not list runs from the store: %s", exc)
+        return []
+
+    out = []
+    for run in runs:
+        counts = run.get("counts") or {}
+        # 'completed' drives the progress bar. Every terminal status counts;
+        # summing them is cheaper than a second query per run.
+        done = sum(n for status, n in counts.items()
+                   if status not in {"running", "pending"})
+        out.append(_summary(run, completed=done))
+    return out
+
+
+def load_snapshot(run_id: str) -> dict | None:
+    """One run, reassembled from the store, in the shape the console polls.
+
+    Returns None when the run is not there — the caller turns that into a 404,
+    the same answer it gave when memory was the only place a run could live.
+    """
+    if not store_available():
+        return None
+    try:
+        runs = fetch_all(
+            """
+            SELECT id, status, source_filename, commit, target_base_url,
+                   total_rows, counts, error, started_at, finished_at
+              FROM runs WHERE id = %s
+            """,
+            (run_id,),
+        )
+        if not runs:
+            return None
+        rows = fetch_all(
+            """
+            SELECT id, sku, source_sheet, row_index, status, product_url,
+                   product_id, error, error_class, colour_tiers,
+                   started_at, finished_at, duration_ms
+              FROM run_rows WHERE run_id = %s ORDER BY row_index, sku
+            """,
+            (run_id,),
+        )
+        steps = fetch_all(
+            """
+            SELECT id, row_id, name, status, attempt, error_class, error,
+                   detail, started_at, duration_ms
+              FROM row_steps WHERE run_id = %s ORDER BY started_at
+            """,
+            (run_id,),
+        )
+        # The tail, to match the live mirror. The console shows recent history,
+        # not the whole narrative, and a long run's event log is large.
+        events = fetch_all(
+            """
+            SELECT * FROM (
+              SELECT row_id, level, message, data, at
+                FROM events WHERE run_id = %s ORDER BY at DESC LIMIT 80
+            ) recent ORDER BY at
+            """,
+            (run_id,),
+        )
+        cost = fetch_all(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM llm_inferences "
+            "WHERE run_id = %s",
+            (run_id,),
+        )
+    except Exception as exc:
+        log.warning("could not load run %s from the store: %s", run_id, exc)
+        return None
+
+    by_row: dict[str, list[dict]] = {}
+    for step in steps:
+        by_row.setdefault(str(step["row_id"]), []).append({
+            "id": str(step["id"]), "name": step["name"], "status": step["status"],
+            "attempt": step["attempt"], "duration_ms": step["duration_ms"],
+            "error_class": step["error_class"], "error": step["error"],
+            "detail": step["detail"] or {}, "started_at": _iso(step["started_at"]),
+        })
+
+    tiers: dict[str, int] = {}
+    shaped = []
+    for row in rows:
+        row_id = str(row["id"])
+        row_tiers = row.get("colour_tiers") or {}
+        for tier, n in row_tiers.items():
+            tiers[tier] = tiers.get(tier, 0) + n
+        shaped.append({
+            "id": row_id, "sku": row["sku"], "status": row["status"],
+            "source_sheet": row.get("source_sheet"),
+            "row_index": row.get("row_index") or 0,
+            "product_url": row.get("product_url"),
+            "product_id": row.get("product_id"),
+            "error": row.get("error"), "error_class": row.get("error_class"),
+            "started_at": _iso(row.get("started_at")),
+            "finished_at": _iso(row.get("finished_at")),
+            "duration_ms": row.get("duration_ms"),
+            "steps": by_row.get(row_id, []),
+            "colour_tiers": row_tiers,
+        })
+
+    snapshot = _summary(runs[0])
+    snapshot.update(
+        completed=sum(1 for r in shaped
+                      if r["status"] not in {"running", "pending"}),
+        colour_tiers=tiers,
+        llm_cost_usd=float(cost[0]["total"] or 0) if cost else 0.0,
+        rows=shaped,
+        events=[{"level": e["level"], "message": e["message"],
+                 "at": _iso(e["at"]),
+                 "row_id": str(e["row_id"]) if e["row_id"] else None,
+                 "data": e["data"] or {}} for e in events],
+    )
+    return snapshot

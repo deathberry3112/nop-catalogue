@@ -26,7 +26,7 @@ import main
 import xlsxCreator
 from app import rollback
 from app.config import ROOT, settings
-from app.store import RunStore
+from app.store import RunStore, run_store
 from main import ConfigError
 from pages.landing_page import LandingPage
 
@@ -141,21 +141,42 @@ class RunManager:
             return self._runs.get(run_id)
 
     def snapshot(self, run_id: str) -> dict | None:
+        """This run as the console polls it, from memory or from the store.
+
+        Memory first, because a LIVE run is only complete there — the mirror is
+        written ahead of the database and survives the store being unreachable.
+        Falling back to Postgres is what stops a restart from turning a run
+        into a 404 while every row of it is still recorded.
+        """
         store = self.get(run_id)
-        return store.snapshot() if store else None
+        if store is not None:
+            return store.snapshot()
+        return run_store.load_snapshot(run_id)
 
     def list(self) -> list[dict]:
-        """Newest first, summary only — the run list must not carry every row."""
+        """Newest first, summary only — the run list must not carry every row.
+
+        The in-process runs and the stored ones are one list. Without the
+        stored half the console forgets every run on restart, which is exactly
+        when somebody needs to find the run that was interrupted — and its
+        products are still in the catalogue waiting to be rolled back.
+        """
         with self._lock:
             stores = list(self._runs.values())
-        summaries = []
+
+        summaries = {}
+        for run in run_store.recent_runs():
+            summaries[run["id"]] = run
+        # Memory wins on conflict: a run still executing has progress the
+        # database has not caught up with yet.
         for store in stores:
             snap = store.snapshot()
             snap.pop("rows", None)
             snap.pop("events", None)
-            summaries.append(snap)
-        return sorted(summaries, key=lambda s: s.get("started_at") or "",
-                      reverse=True)
+            summaries[snap["id"]] = snap
+
+        return sorted(summaries.values(),
+                      key=lambda s: s.get("started_at") or "", reverse=True)
 
     def report_path(self, run_id: str) -> Path | None:
         path = REPORT_DIR / f"{run_id}.xlsx"
