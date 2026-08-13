@@ -175,24 +175,26 @@ class RunManager:
     def rollback(self, run_id: str, confirm_skus: list[str],
                  *, base_url: str = "", email: str = "",
                  password: str = "") -> dict:
-        """Delete this run's products, having re-derived the set server-side.
+        """Delete the selected subset of this run's products.
 
-        `confirm_skus` is what the operator was shown. It is not the input to
-        the deletion — the plan is recomputed here and is the only thing acted
-        on — it is a check that the two agree. If the catalogue moved between
-        the dialog opening and the button being pressed, that mismatch stops
-        the operation instead of silently deleting a set nobody approved.
+        `confirm_skus` is the operator's selection, and it is a filter, not an
+        instruction: the plan is recomputed here from the store, and the
+        selection is only allowed to narrow it. A SKU that is no longer
+        deletable — already rolled back, claim released, someone else got there
+        first — is not in the recomputed plan, so it refuses the whole request
+        instead of silently deleting a set nobody approved.
+
+        That is what makes rolling a run back a few products at a time safe,
+        including from two dialogs open at once.
         """
         plan = rollback.build_plan(run_id)
         if plan.blocked:
             raise ConfigError(plan.blocked)
 
-        if sorted(confirm_skus) != plan.skus:
-            raise ConfigError(
-                "the confirmation does not match what would be deleted now — "
-                f"you approved {sorted(confirm_skus)}, the current plan is "
-                f"{plan.skus}. Nothing was deleted; re-open the dialog and "
-                f"check it again.")
+        try:
+            plan = rollback.narrow(plan, confirm_skus)
+        except rollback.SelectionError as exc:
+            raise ConfigError(str(exc)) from exc
 
         config = settings()
         target = base_url or plan.base_url or config.admin_base_url

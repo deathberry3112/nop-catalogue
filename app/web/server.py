@@ -228,12 +228,13 @@ def get_run(run_id: str) -> dict:
 
 
 class Rollback(BaseModel):
-    """Approval for a deletion, echoing back exactly what was shown.
+    """Approval for a deletion: the products the operator selected.
 
-    `skus` is a check, not an instruction: the server recomputes the set from
-    the store and refuses if the two disagree. Nothing a caller sends here can
-    widen the scope — an unknown SKU makes the lists differ and stops the
-    operation, it does not get deleted.
+    `skus` narrows, it never instructs. The server recomputes the deletable set
+    from the store and the selection may only be a subset of it, so nothing a
+    caller sends here can widen the scope — an unknown SKU refuses the whole
+    request rather than getting deleted. Selecting fewer than the plan offers
+    is the supported case: a run can be rolled back a few products at a time.
     """
 
     skus: list[str]
