@@ -1,5 +1,10 @@
 # Deployment — as built
 
+**Role:** Why there is one container, why the Playwright base image, CORS/healthcheck philosophy.
+**Not for:** Live Railway IDs and day-to-day runbook ([`RAILWAY.md`](RAILWAY.md)); product laws ([`ARCHITECTURE_INVARIANTS.md`](ARCHITECTURE_INVARIANTS.md)).
+
+Verified against: `Dockerfile`, `railway.json`, `app/web/server.py`, `requirements.txt` (**2026-08-17**).
+
 One container serves the console and the API. Railway Postgres holds the run
 store. That is the whole architecture, and every other decision here follows
 from it.
@@ -76,24 +81,22 @@ rule the rest of this codebase follows.
 ## CORS
 
 There is no cross-origin traffic: one origin serves the console and the API, in
-every environment including local. `CORS_ALLOW_ORIGINS` (default `*`) exists so
-that fronting the app with something later is a variable change rather than a
-code change, and so allowed origins are never a literal in the source. As
-shipped, the middleware never fires.
+every environment including local. `CORS_ALLOW_ORIGINS` (default `*`) keeps
+allowed origins out of the source. As shipped, the middleware never fires.
 
 ## CI/CD
 
 [`railway.json`](../railway.json) tells Railway to build the Dockerfile and
 healthcheck `/api/ping`.
 
-**On project `nop-commerce-catalogue`:** connect the `app` service to the GitHub
-repo (see [`RAILWAY.md`](RAILWAY.md) § GitHub auto-deploy). Until that source is
-connected, deploys are CLI / dashboard only — not push-to-deploy.
+**As wired:** service `app` on project `nop-commerce-catalogue` deploys from
+GitHub `pranayupbott/nop-commerce-catalogue-automation` branch `main` (see
+[`RAILWAY.md`](RAILWAY.md) § GitHub auto-deploy). Pushes/merges to that branch
+rebuild `app`. Postgres data is unchanged. The container still carries the
+console, so that single trigger deploys UI + API + RPA together. There is no
+second front-end pipeline.
 
-When a GitHub source *is* connected to branch `main`, Railway rebuilds `app` on
-pushes/merges to that branch. Postgres data is unchanged by those deploys. The
-container still carries the console, so that single trigger deploys UI + API +
-RPA together. There is no second front-end pipeline.
+If the GitHub source is disconnected, deploys fall back to CLI / dashboard only.
 
 ## What is not solved
 
@@ -123,8 +126,8 @@ RPA together. There is no second front-end pipeline.
 | `docs/RAILWAY.md` | As-built Railway inventory and runbook |
 | `README.md` | Deploying / Configuration sections |
 
-## Rollback
+## Platform rollback
 
-On the platform, redeploy any earlier deployment from the Railway dashboard.
-Locally, reverting the Postgres-client commits restores the previous
-Supabase-oriented code; there is no automatic dual-write to both backends.
+Redeploy an earlier deployment from the Railway dashboard. Catalogue undo (delete
+products this run created) is [`app/rollback.py`](../app/rollback.py), not a
+platform rollback.

@@ -11,12 +11,12 @@ the round-trip test (tests/test_parser.py) fails until both are done.
     result.errors    -> problems that stopped a sheet being read at all
 
 WHAT THIS REFUSES TO DO IS THE POINT. A column it does not recognise is
-reported, never ignored. The previous analysis of this pipeline found that an
-unexpected attribute column (say "Material") would most likely be dropped in
-silence — the product would be created with only colours and sizes, the
-combinations generated over two dimensions, and the report would still say
-"Added". A wrong catalogue with a clean report is the worst outcome available
-here, so an unknown column is a row-level error and the row does not run.
+reported, never ignored. An unexpected attribute column (say "Material") must
+not be dropped in silence — the product would be created with only colours and
+sizes, the combinations generated over two dimensions, and the report would
+still say "Added". A wrong catalogue with a clean report is the worst outcome
+available here, so an unknown column is a row-level error and the row does not
+run.
 
 Validation errors land on the row rather than raising: the user should see
 every problem in their workbook at once, not the first one. main.partition()
@@ -357,9 +357,9 @@ def _check_attribute_columns(sheet: str, mapping: dict[int, str],
     The template carries the header "Product Attributes Type" TWICE — once for
     the colour attribute and once for the size attribute — and they are told
     apart by position, because they are spelled identically. That makes them
-    easy to get wrong and, until now, quiet about it: a missing second column
-    fell back to "Size" in silence, and a second column repeating "Color" made
-    the runner file every size as a colour.
+    easy to get wrong: a missing second column used to fall back to "Size" in
+    silence, and a second column repeating "Color" made the runner file every
+    size as a colour. The check below reports that instead.
 
     Reported once per sheet and in the user's vocabulary. The header they can
     search for is "Product Attributes Type"; "the size attribute column" names

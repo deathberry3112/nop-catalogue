@@ -13,10 +13,8 @@ SECURITY POSTURE, because this handles admin credentials and a database:
   * the admin password is never serialised into a response. /api/health reports
     presence, never values.
 
-There is no authentication yet. That is a deployment decision (put it behind
-your existing auth, or add a session layer here) and it is called out in the
-design doc rather than guessed at — but do not expose this to the internet as
-it stands.
+There is no authentication. A public URL is a public admin tool. Do not
+expose this to the internet as it stands. See docs/WEB.md.
 """
 
 from __future__ import annotations
@@ -47,9 +45,8 @@ api = FastAPI(title="nopCommerce product upload", version="1.0.0")
 #:
 #: The shipped topology has NO cross-origin traffic: one container serves the
 #: console and the API, so the browser only ever sees one origin and this
-#: middleware never fires. It is env-driven rather than absent so that putting
-#: a CDN or a separate front end in front later is a variable, not a patch —
-#: and so the allowed origins are never a literal in this file.
+#: middleware never fires. Origins come from CORS_ALLOW_ORIGINS so they are
+#: never a literal in this file.
 #:
 #: allow_credentials is deliberately NOT set: the admin password travels in the
 #: request body (see StartRun), never in a cookie, so there is nothing for it
