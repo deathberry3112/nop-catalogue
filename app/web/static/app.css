@@ -443,6 +443,11 @@ main { max-width:1180px; margin:0 auto; padding:1.75rem 1.5rem 5rem; }
 .modal {
   background:var(--panel); border:1px solid var(--line); border-radius:14px;
   padding:1.4rem; max-width:460px; box-shadow:0 20px 50px rgba(0,0,0,.3);
+  /* The dialog scrolls itself. Without this a long product list pushes the
+     confirm button past the bottom of the screen with no way to reach it, and
+     the wheel scrolls the page behind instead — which reads as a stuck
+     dialog, not a tall one. */
+  max-height:calc(100vh - 3rem); overflow-y:auto;
 }
 /* The rollback dialog has to show every product by name before anything is
    deleted — "12 products" is not informed consent. */
@@ -451,6 +456,10 @@ main { max-width:1180px; margin:0 auto; padding:1.75rem 1.5rem 5rem; }
   max-height:15rem; overflow-y:auto; margin:.8rem 0;
   border:1px solid var(--line); border-radius:9px; background:var(--panel-2);
 }
+/* The selection lists do NOT scroll independently: the modal is the one scroll
+   container, so a long list scrolls the dialog rather than trapping the wheel
+   in a 15rem box nested inside another scroll area. */
+#rb-groups .rb-list { max-height:none; overflow-y:visible; }
 .rb-row {
   display:flex; align-items:baseline; gap:.6rem; padding:.4rem .7rem;
   border-bottom:1px solid var(--line); font-size:12.5px;
@@ -458,6 +467,32 @@ main { max-width:1180px; margin:0 auto; padding:1.75rem 1.5rem 5rem; }
 .rb-row:last-child { border-bottom:0; }
 .rb-row .sku { font-family:var(--mono, ui-monospace, monospace); font-weight:600; }
 .rb-row .why { margin-left:auto; color:var(--warn); font-size:11.5px; }
+
+/* ── choosing which products go ──────────────────────────────────────────
+   Presets carry the three answers people actually want; the checkboxes are
+   the escape hatch. Ticking 3 boxes out of 12 to express the common case is
+   the wrong default. */
+.rb-picker { display:flex; align-items:center; gap:.4rem; margin:.6rem 0 .2rem; }
+.rb-picker-label { font-size:11.5px; color:var(--muted); margin-right:.15rem; }
+.chip {
+  font:inherit; font-size:11.5px; line-height:1; cursor:pointer;
+  padding:.32rem .6rem; border-radius:999px;
+  border:1px solid var(--line); background:var(--panel-2); color:var(--fg, inherit);
+}
+.chip:hover:not(:disabled) { border-color:var(--accent); }
+.chip:disabled { opacity:.4; cursor:not-allowed; }
+
+/* The whole row is the hit target, and the checkbox stays a real focusable
+   control — this dialog is the last place to reinvent one out of divs. */
+.rb-pick { display:flex; align-items:center; gap:.55rem; cursor:pointer; flex:1; }
+.rb-pick input { width:15px; height:15px; margin:0; cursor:pointer; accent-color:var(--accent); }
+.rb-row:has(.rb-pick input:not(:checked)) { opacity:.5; }
+.rb-row:has(.rb-pick input:checked) .sku { font-weight:700; }
+.rb-open {
+  margin-left:.5rem; text-decoration:none; color:var(--muted);
+  font-size:12px; padding:0 .2rem;
+}
+.rb-open:hover { color:var(--accent); }
 
 /* ── the rollback report ─────────────────────────────────────────────────
    Same vocabulary as the rest of the app — stat tiles for the counts, pills
@@ -485,6 +520,30 @@ main { max-width:1180px; margin:0 auto; padding:1.75rem 1.5rem 5rem; }
 /* however many rows carry warnings, the confirm button stays on screen */
 .modal .alert { max-height:9.5rem; overflow-y:auto; margin:.8rem 0; }
 .modal-actions { display:flex; gap:.5rem; justify-content:flex-end; margin-top:1.2rem; }
+
+/* A tall dialog scrolls its BODY, not its shell — title pinned at the top,
+   confirm field and buttons pinned at the bottom, list scrolling between them.
+   A sticky footer inside one long scroll area was the wrong shape: it floats
+   over whatever has not been scrolled to yet, so the buttons appeared mid
+   dialog with the confirm field showing underneath them. */
+.modal:has(.modal-body) {
+  display:flex; flex-direction:column; overflow:hidden; padding-bottom:0;
+}
+.modal-body {
+  flex:1 1 auto; overflow-y:auto; min-height:0;
+  margin:0 -1.4rem; padding:0 1.4rem;   /* scrollbar sits at the modal edge */
+}
+.modal:has(.modal-body) > :not(.modal-body) { flex:0 0 auto; }
+.modal:has(.modal-body) .modal-actions {
+  margin:1rem -1.4rem 0; padding:.9rem 1.4rem;
+  background:var(--panel); border-top:1px solid var(--line);
+  border-radius:0 0 13px 13px;
+}
+
+/* An open dialog locks the page behind it. Without this the wheel scrolls the
+   run list under the modal once the modal itself hits its end, which is what
+   makes a tall dialog feel broken. */
+body.modal-open { overflow:hidden; }
 
 @media (max-width:860px) {
   .conn-grid { grid-template-columns:1fr; }

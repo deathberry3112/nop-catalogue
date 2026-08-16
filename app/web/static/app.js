@@ -381,26 +381,41 @@ $('#m-confirm').addEventListener('click', () => { $('#modal').hidden = true; sta
 
 /* ── rollback ────────────────────────────────────────────────────────────
    Deleting products from a live catalogue. The dialog names every product
-   before anything happens, and the set it shows is the set the server sends
-   straight back — the POST carries those SKUs so the server can refuse if its
-   own recomputation disagrees. Nothing typed here can widen the scope. */
+   before anything happens and lets the operator pick which of them go — "the
+   run half-worked" is the usual reason anyone opens this, and deleting all
+   twelve is rarely the right answer to three of them breaking.
+
+   The POST carries the SELECTED SKUs. The server recomputes the plan and lets
+   the selection only NARROW it, so nothing clicked here can widen the scope,
+   and a dialog left open while someone else deletes is refused outright rather
+   than half-applied. */
 
 let rbPlan = null;
+let rbChosen = new Set();
+
+/* The split the dialog is built around: a product the run created but never
+   finished configuring is the one people came here to delete. Deleting one
+   that worked is a bigger claim, so it lives in its own group and is never
+   preselected. */
+const rbUnfinished = (p) => p.row_status === 'failed';
 
 $('#btn-rollback').addEventListener('click', async () => {
   rbPlan = null;
+  rbChosen = new Set();
   $('#rb-confirm').value = '';
-  $('#rb-go').disabled = true;
   $('#rb-blocked').hidden = true;
   $('#rb-excluded').hidden = true;
-  $('#rb-list').innerHTML = '<div class="rb-row muted">Working out what this run created…</div>';
+  $('#rb-picker').hidden = true;
+  $('#rb-groups').innerHTML =
+    '<div class="rb-list"><div class="rb-row muted">Working out what this run created…</div></div>';
   $('#rb-modal').hidden = false;
+  syncRbArm();
 
   let plan;
   try {
     plan = await api(`/api/runs/${state.runId}/rollback`);
   } catch (e) {
-    $('#rb-list').innerHTML = '';
+    $('#rb-groups').innerHTML = '';
     $('#rb-blocked').textContent = `Could not work out what to delete: ${e.message}`;
     $('#rb-blocked').hidden = false;
     return;
@@ -410,7 +425,8 @@ $('#btn-rollback').addEventListener('click', async () => {
 
   /* `excluded` is rendered for blocked plans too — it is the reason, and
      hiding it is how "this run created no products" reads as a lie to someone
-     who just watched it create one. */
+     who just watched it create one. After a partial rollback it is also where
+     "where did the other nine go?" gets answered. */
   if (plan.excluded.length) {
     $('#rb-excluded').innerHTML =
       `<strong>Left alone</strong><ul>${
@@ -419,7 +435,7 @@ $('#btn-rollback').addEventListener('click', async () => {
   }
 
   if (plan.blocked) {
-    $('#rb-list').innerHTML = '';
+    $('#rb-groups').innerHTML = '';
     $('#rb-intro').textContent = '';
     $('#rb-blocked').textContent = plan.blocked;
     $('#rb-blocked').hidden = false;
@@ -428,32 +444,122 @@ $('#btn-rollback').addEventListener('click', async () => {
   }
 
   rbPlan = plan;
-  $('#rb-confirm-field').hidden = false;
-  $('#rb-intro').innerHTML =
-    `<strong>${plan.count}</strong> product(s) were created by this run and will be
-     deleted. Nothing else on the store is touched — products this run resumed,
-     skipped, or only previewed are not in this list.`;
-  $('#rb-list').innerHTML = plan.products.map((p) => `
-    <div class="rb-row">
-      <span class="sku">${esc(p.sku)}</span>
-      ${p.row_status && p.row_status !== 'added'
-        ? `<span class="why">row ended as ${esc(p.row_status)}</span>` : ''}
-    </div>`).join('');
+  const unfinished = plan.products.filter(rbUnfinished);
 
+  /* Preselect the NARROWEST plausible set, never the widest: what the run left
+     unfinished, or nothing at all when it finished everything. A destructive
+     dialog that opens with every box ticked is one stray Enter from a very bad
+     afternoon. */
+  rbChosen = new Set(unfinished.map((p) => p.sku));
+
+  $('#rb-confirm-field').hidden = false;
+  $('#rb-picker').hidden = false;
+  $('#rb-pick-incomplete').disabled = !unfinished.length;
+  $('#rb-intro').innerHTML =
+    `This run created <strong>${plan.count}</strong> product(s)`
+    + (unfinished.length
+        ? `, <strong>${unfinished.length}</strong> of which it never finished configuring. `
+        : `, all of them fully configured. `)
+    + `Products it resumed, skipped or only previewed are not listed, and cannot
+       be deleted from here.`;
+
+  renderRbGroups();
 });
+
+/* Grouped, not one flat list: "which of these actually worked" is the question
+   the operator is answering, so the answer is the structure. */
+function renderRbGroups() {
+  if (!rbPlan) return;
+  const buckets = [
+    ['Incomplete — created, never finished', 'warn',
+     rbPlan.products.filter(rbUnfinished)],
+    ['Complete — fully configured by this run', 'ok',
+     rbPlan.products.filter((p) => !rbUnfinished(p))],
+  ];
+
+  $('#rb-groups').innerHTML = buckets.map(([label, cls, items]) => (
+    !items.length ? '' : `<section class="rb-group">
+      <h4 class="rb-group-title">
+        <span class="pill ${cls}">${esc(label)}</span>
+        <span class="muted">${items.length}</span>
+      </h4>
+      <div class="rb-list ${cls}">${items.map(rbRow).join('')}</div>
+    </section>`)).join('');
+
+  syncRbArm();
+}
+
+/* A real checkbox inside a real label, so the row is one big hit target and
+   stays keyboard-reachable — which matters more on this dialog than on any
+   other screen in the app. */
+function rbRow(p) {
+  const note = p.row_status === 'failed' ? 'the run failed after creating it'
+             : p.row_status === 'added' ? ''
+             : `row status: ${p.row_status || 'not recorded'}`;
+  /* Only ever an http(s) link. The URL comes from our own store, but this is
+     an anchor in a delete dialog and the check costs one line. */
+  const url = /^https?:\/\//i.test(p.product_url || '') ? p.product_url : '';
+  return `<div class="rb-row">
+    <label class="rb-pick">
+      <input type="checkbox" data-sku="${esc(p.sku)}"
+             ${rbChosen.has(p.sku) ? 'checked' : ''}>
+      <span class="sku">${esc(p.sku)}</span>
+    </label>
+    ${note ? `<span class="why">${esc(note)}</span>` : ''}
+    ${url ? `<a class="rb-open" href="${esc(url)}" target="_blank"
+                rel="noopener noreferrer" title="Open in the admin">↗</a>` : ''}
+  </div>`;
+}
+
+$('#rb-groups').addEventListener('change', (e) => {
+  const box = e.target.closest('input[type=checkbox][data-sku]');
+  if (!box) return;
+  if (box.checked) rbChosen.add(box.dataset.sku);
+  else rbChosen.delete(box.dataset.sku);
+  syncRbArm();
+});
+
+$('#rb-picker').addEventListener('click', (e) => {
+  const chip = e.target.closest('[data-pick]');
+  if (!chip || !rbPlan) return;
+  rbChosen = new Set(
+    chip.dataset.pick === 'all' ? rbPlan.products.map((p) => p.sku)
+    : chip.dataset.pick === 'none' ? []
+    : rbPlan.products.filter(rbUnfinished).map((p) => p.sku));
+  renderRbGroups();
+});
+
+/* The button says what it is about to do, and deleting everything reads
+   heavier than deleting a few, because it is. */
+function syncRbArm() {
+  const go = $('#rb-go');
+  const n = rbChosen.size;
+  const total = rbPlan ? rbPlan.count : 0;
+
+  go.textContent = !n ? 'Delete'
+    : n === total ? `Delete ALL ${n} product(s)`
+    : `Delete ${n} of ${total} product(s)`;
+  go.disabled = !(rbPlan && n && $('#rb-confirm').value === 'DELETE');
+
+  /* The sentence reads "<span> removed from…", so the span carries its own
+     verb — otherwise the markup has to guess at the plural. */
+  $('#rb-count').textContent = !n ? 'The selected products are'
+    : n === 1 ? 'One selected product is'
+    : `${n} selected products are`;
+}
 
 /* Typing DELETE is the arming step. Deliberately exact — a case-insensitive
    match would arm on "delete", which people type by reflex. */
-$('#rb-confirm').addEventListener('input', (e) => {
-  $('#rb-go').disabled = !(rbPlan && e.target.value === 'DELETE');
-});
+$('#rb-confirm').addEventListener('input', syncRbArm);
 
 $('#rb-cancel').addEventListener('click', () => { $('#rb-modal').hidden = true; });
 $('#rb-done').addEventListener('click', () => { $('#rb-result').hidden = true; });
 
 $('#rb-go').addEventListener('click', async () => {
-  if (!rbPlan) return;
+  if (!rbPlan || !rbChosen.size) return;
   const go = $('#rb-go');
+  const label = go.textContent;
+  const untouched = rbPlan.count - rbChosen.size;
   go.disabled = true;
   go.textContent = 'Deleting…';
   let report;
@@ -461,20 +567,21 @@ $('#rb-go').addEventListener('click', async () => {
     report = await api(`/api/runs/${state.runId}/rollback`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      /* the SKUs the operator was actually shown — the server checks them
-         against its own recomputation and refuses on any disagreement */
-      body: JSON.stringify({ skus: rbPlan.products.map((p) => p.sku), ...readCreds() }),
+      /* the SKUs the operator actually ticked. The server recomputes the plan
+         and allows this only to narrow it, so an entry that is no longer
+         deletable refuses the whole request rather than being skipped. */
+      body: JSON.stringify({ skus: [...rbChosen], ...readCreds() }),
     });
   } catch (e) {
     go.disabled = false;
-    go.textContent = 'Delete them';
+    go.textContent = label;
     $('#rb-blocked').textContent = e.message;
     $('#rb-blocked').hidden = false;
     return;
   }
-  go.textContent = 'Delete them';
+  go.textContent = label;
   $('#rb-modal').hidden = true;
-  showRollbackReport(report);
+  showRollbackReport(report, untouched);
   pollRun();          // the run's own view is unchanged, but re-read it anyway
 });
 
@@ -487,7 +594,7 @@ const RB_GROUPS = [
   ['failed',       'Failed — still in place',  'bad'],
 ];
 
-function showRollbackReport(report) {
+function showRollbackReport(report, untouched = 0) {
   const counts = Object.fromEntries(
     RB_GROUPS.map(([key]) => [key, (report[key] || []).length]));
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
@@ -521,6 +628,15 @@ function showRollbackReport(report) {
     </section>`;
   }).join('');
 
+  /* Without this line a partial rollback and a whole one produce identical
+     reports, and "did I get the other nine?" is not a question to leave
+     someone holding after a destructive operation. */
+  const remainder = untouched > 0
+    ? `<p class="muted">${untouched} product(s) from this run were not selected
+        and are still in the catalogue. You can delete them later — re-open
+        this dialog and they will be the only ones listed.</p>`
+    : '';
+
   $('#rb-report').innerHTML = total
     ? `<p class="rb-headline ${left ? 'warn' : ''}">
          ${left
@@ -528,6 +644,7 @@ function showRollbackReport(report) {
               still in the catalogue.`
            : `<strong>${counts.deleted}</strong> product(s) removed from the catalogue.`}
        </p>
+       ${remainder}
        <div class="stats wide">${tiles}</div>
        ${groups}`
     : '<p class="muted">Nothing to report.</p>';
@@ -665,16 +782,54 @@ function renderRun(run) {
   $('#btn-report').hidden = run.status === 'running';
   $('#btn-report').href = `/api/runs/${run.id}/report`;
 
-  /* Only offered once the run has stopped and only when it actually created
+  /* Only offered once the run has stopped and only when it could have created
      something. A dry run has nothing to undo, and a live run's final set is
      not knowable yet — the server refuses both, this just stops the button
-     from inviting it. */
-  const created = (run.counts || {}).added || 0;
-  $('#btn-rollback').hidden = run.status === 'running' || !run.commit || !created;
+     from inviting it.
 
+     'failed' counts as much as 'added': a row that saved the product and then
+     died configuring it is claimed, and deleting that orphan is the whole
+     reason this button exists. Gating on `added` alone hid it completely on
+     the one run that needed it most — every creation failing means added is 0
+     and the products are still there. */
+  const c0 = run.counts || {};
+  const undoable = (c0.added || 0) + (c0.failed || 0);
+  $('#btn-rollback').hidden = run.status === 'running' || !run.commit || !undoable;
+
+  renderOrphanWarning(run);
   renderFailures(run);
   renderRows(run);
   renderLog(run);
+}
+
+/* Half-built products are the one outcome this screen used to leave implicit.
+   A failed row that got as far as saving left a real product in the catalogue,
+   configured up to whichever step killed it — and the run still reports itself
+   as finished. Somebody reading "5 failed" has no reason to know there are now
+   five incomplete products live on the store, so say it. */
+function renderOrphanWarning(run) {
+  const box = $('#r-orphans');
+  const failed = run.commit
+    ? run.rows.filter((r) => r.status === 'failed') : [];
+  box.hidden = !failed.length;
+  if (!failed.length) return;
+
+  /* Rows record the product they created before dying, so the count is exact.
+     Runs from before that was recorded have no product_url on a failed row —
+     there the honest answer is "some of these", and the rollback dialog is
+     the thing that actually knows. */
+  const known = failed.filter((r) => r.product_url).length;
+  box.innerHTML = known
+    ? `<strong>${known} half-configured product(s) are still in the catalogue.</strong>
+       These rows created their product and then failed part-way through
+       configuring it, so what is on the store is incomplete rather than
+       absent. Use <em>Delete created products</em> above — they are already
+       preselected in that dialog.`
+    : `<strong>${failed.length} row(s) failed, and some may have left a
+       half-configured product behind.</strong> A row that got as far as saving
+       created a real product before it failed. Open <em>Delete created
+       products</em> above to see exactly which — they are listed under
+       <em>Incomplete</em> and preselected.`;
 }
 
 /* Failures grouped by CAUSE. A 200-product run with 40 failures is usually two
@@ -909,6 +1064,19 @@ $('#c-add').addEventListener('click', () => {
 });
 
 /* ── boot ────────────────────────────────────────────────────────────── */
+
+/* Lock the page while any dialog is open. Watched rather than toggled at each
+   call site: every modal here is shown and hidden by setting `hidden` on its
+   backdrop, so observing that one attribute covers all of them and cannot
+   drift out of sync with a new one. */
+(function lockScrollBehindModals() {
+  const backdrops = $$('.modal-backdrop');
+  const sync = () => document.body.classList.toggle(
+    'modal-open', backdrops.some((b) => !b.hidden));
+  backdrops.forEach((b) => new MutationObserver(sync)
+    .observe(b, { attributes: true, attributeFilter: ['hidden'] }));
+  sync();
+})();
 
 restoreCreds();
 loadHealth();

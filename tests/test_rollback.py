@@ -118,13 +118,20 @@ def test_a_recreated_sku_is_deletable_again(monkeypatch):
 
 def test_already_deleted_is_not_reported_as_never_created(monkeypatch):
     """"created nothing" and "created things that are already gone" are
-    opposite facts and were reading identically."""
+    opposite facts and were reading identically.
+
+    Selective rollback makes this the ORDINARY end state — delete a few at a
+    time and the last dialog you open is this one — so it says plainly that
+    they were deleted rather than reporting a bookkeeping anomaly.
+    """
     wire(monkeypatch,
          claimed=[claim("A-1", deleted_at="2026-01-01T00:00:00Z")],
          rows=[row("A-1", status="added")])
     plan = rollback.build_plan(RUN)
-    assert plan.blocked and "no longer claimed" in plan.blocked
+    assert plan.blocked and "already been deleted" in plan.blocked
     assert plan.excluded, "the reason must survive into the dialog"
+    assert not any("cannot prove" in x for x in plan.excluded), \
+        "a product we deleted ourselves is not an unprovable claim"
 
 
 def test_a_claim_against_a_different_store_is_excluded(monkeypatch):
@@ -242,3 +249,85 @@ def test_the_plan_serialises_for_the_confirmation_dialog(monkeypatch):
 def test_skus_are_sorted_so_the_confirmation_check_is_order_independent(monkeypatch):
     wire(monkeypatch, claimed=[claim("B"), claim("A")], rows=[row("A"), row("B")])
     assert rollback.build_plan(RUN).skus == ["A", "B"]
+
+
+# --- selective rollback: narrow() ---------------------------------------------
+#
+# The confirmation used to demand an exact match — "the list you sent must equal
+# the list I computed". Subsets replaced that, and these pin down the property
+# it existed for: a selection may only ever narrow the plan.
+
+def plan_of(monkeypatch, skus):
+    wire(monkeypatch, claimed=[claim(s) for s in skus],
+         rows=[row(s) for s in skus])
+    return rollback.build_plan(RUN)
+
+
+def test_a_selection_narrows_the_plan_to_what_was_chosen(monkeypatch):
+    plan = plan_of(monkeypatch, ["A-1", "A-2", "A-3"])
+    assert rollback.narrow(plan, ["A-1", "A-3"]).skus == ["A-1", "A-3"]
+
+
+def test_narrowing_keeps_the_records_rather_than_rebuilding_them(monkeypatch):
+    """execute() re-verifies product_id against the page before clicking, so
+    the narrowed plan must carry the same Doomed objects build_plan proved."""
+    plan = plan_of(monkeypatch, ["A-1", "A-2"])
+    chosen = rollback.narrow(plan, ["A-2"]).products
+    assert chosen == [p for p in plan.products if p.sku == "A-2"]
+
+
+def test_a_sku_outside_the_plan_refuses_the_whole_request(monkeypatch):
+    """The one that matters: nothing sent here can widen the scope, and an
+    unrecognised SKU stops the deletion rather than joining it."""
+    plan = plan_of(monkeypatch, ["A-1", "A-2"])
+    with pytest.raises(rollback.SelectionError, match="no longer"):
+        rollback.narrow(plan, ["A-1", "SOMEBODY-ELSES"])
+
+
+def test_a_stale_dialog_deletes_nothing_rather_than_part(monkeypatch):
+    """Two operators, one run. The first deleted A-2; the second still has it
+    on screen. The second must not get a quiet partial deletion of the rest."""
+    plan = plan_of(monkeypatch, ["A-1", "A-3"])       # A-2 already released
+    with pytest.raises(rollback.SelectionError):
+        rollback.narrow(plan, ["A-1", "A-2", "A-3"])
+
+
+def test_an_empty_selection_is_refused(monkeypatch):
+    plan = plan_of(monkeypatch, ["A-1"])
+    with pytest.raises(rollback.SelectionError, match="nothing was selected"):
+        rollback.narrow(plan, [])
+
+
+def test_blank_entries_are_not_a_selection(monkeypatch):
+    plan = plan_of(monkeypatch, ["A-1"])
+    with pytest.raises(rollback.SelectionError, match="nothing was selected"):
+        rollback.narrow(plan, ["", "   "])
+
+
+def test_selecting_everything_is_just_the_widest_subset(monkeypatch):
+    """The old all-or-nothing path still works, unchanged, out of order."""
+    plan = plan_of(monkeypatch, ["A-1", "A-2"])
+    assert rollback.narrow(plan, ["A-2", "A-1"]).skus == ["A-1", "A-2"]
+
+
+def test_narrowing_does_not_mutate_the_plan_it_was_given(monkeypatch):
+    """build_plan's result is the authoritative set. narrow returns a view of
+    it and must not quietly shrink the thing it was checked against."""
+    plan = plan_of(monkeypatch, ["A-1", "A-2"])
+    rollback.narrow(plan, ["A-1"])
+    assert plan.skus == ["A-1", "A-2"]
+
+
+# --- delete a few now, a few later --------------------------------------------
+
+def test_a_partly_rolled_back_run_offers_only_the_remainder(monkeypatch):
+    """What makes repeat rollbacks need no bookkeeping: each delete releases
+    its own claim, so the next plan is simply what is left."""
+    wire(monkeypatch,
+         claimed=[claim("A-1", deleted_at="2026-01-01T00:00:00Z"),
+                  claim("A-2"), claim("A-3")],
+         rows=[row("A-1"), row("A-2"), row("A-3")])
+    plan = rollback.build_plan(RUN)
+    assert plan.skus == ["A-2", "A-3"]
+    assert any("already deleted" in x for x in plan.excluded), \
+        "the dialog has to answer 'where did the first one go?'"

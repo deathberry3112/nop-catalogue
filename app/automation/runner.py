@@ -322,6 +322,11 @@ def run_batch(page, rows, *, base_url: str, email: str, password: str,
         row_id = store.row_started(row, index)
         row_started = time.monotonic()
         tiers: dict[str, int] = {}
+        # Set only on the CREATE path, so it means exactly what the rollback
+        # means by ownership. A row that dies after this is set left a real,
+        # half-configured product behind — recording it here is what lets the
+        # run screen say so instead of reporting a bare 'failed'.
+        made: tuple[str, str | None] | None = None
 
         try:
             existing = _retrying(store, row_id, "lookup",
@@ -365,6 +370,7 @@ def run_batch(page, rows, *, base_url: str, email: str, password: str,
                             f"saved but no product id: {page.url}", step="save")
 
                 _retrying(store, row_id, "save", save)
+                made = (page.url, product.product_id)
                 store.claim_product(base_url, sku, page.url, product.product_id)
                 _record_local(sku, page.url)
                 owned.add(sku)
@@ -386,8 +392,12 @@ def run_batch(page, rows, *, base_url: str, email: str, password: str,
         except Exception as exc:
             classified = classify(exc)
             log.error("%s failed (%s): %s", sku, classified.error_class.value, exc)
+            # `made` carries the product this row created before it died, so a
+            # failed row points at the orphan it left rather than at nothing.
             store.row_finished(row_id, status="failed", error=str(exc),
                                error_class=classified.error_class.value,
+                               product_url=made[0] if made else None,
+                               product_id=made[1] if made else None,
                                colour_tiers=tiers)
             results.append({"sku": sku, "error": str(exc),
                             "error_class": classified.error_class.value})

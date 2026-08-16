@@ -218,6 +218,12 @@
 
       <div class="stats wide" id="r-stats"></div>
 
+      <!-- A failed row that got as far as saving left a real product behind,
+           half-configured. Nothing else on this screen says so, and the run
+           reads as finished — so it gets its own warning rather than a line
+           the reader has to infer. -->
+      <div class="alert warn" id="r-orphans" hidden></div>
+
       <div id="r-failures" hidden>
         <h3 class="section-title sm">Failures by cause</h3>
         <p class="hint">Grouped by what went wrong, not by row — a batch usually has
@@ -289,25 +295,45 @@
   </div>
 </div>
 
-<!-- rollback confirmation. Lists every product by name before anything is
-     deleted, and will not arm the button until DELETE is typed. -->
+<!-- rollback confirmation. Lists every product by name and lets the operator
+     choose which of them go, because "the run half-worked" is the usual reason
+     anyone opens this. Nothing is armed until DELETE is typed. -->
 <div class="modal-backdrop" id="rb-modal" hidden>
   <div class="modal wide">
-    <h3>Delete the products this run created?</h3>
+    <h3>Delete products this run created?</h3>
 
-    <div class="alert error">
-      <strong>This cannot be undone.</strong> These products are removed from
-      the live catalogue at <span class="mono" id="rb-target"></span>, along
-      with their attributes and combinations.
+    <!-- Only this scrolls. The title above and the buttons below stay put, so
+         a long product list never pushes the confirm button off screen and the
+         footer never floats over a field nobody has scrolled to yet. -->
+    <div class="modal-body">
+      <div class="alert error">
+        <strong>This cannot be undone.</strong> <span id="rb-count">The selected
+        products are</span> removed from the live catalogue at
+        <span class="mono" id="rb-target"></span>, along with their attributes
+        and combinations.
+      </div>
+
+      <p id="rb-intro" class="muted"></p>
+
+      <!-- Presets first: the three answers people actually want. The checkboxes
+           are the escape hatch, not the primary control. -->
+      <div class="rb-picker" id="rb-picker" hidden>
+        <span class="rb-picker-label">Select</span>
+        <button type="button" class="chip" data-pick="incomplete"
+                id="rb-pick-incomplete">Incomplete</button>
+        <button type="button" class="chip" data-pick="all">All</button>
+        <button type="button" class="chip" data-pick="none">None</button>
+      </div>
+
+      <div id="rb-groups"></div>
+
+      <div class="alert warn" id="rb-excluded" hidden></div>
+      <div class="alert error" id="rb-blocked" hidden></div>
     </div>
 
-    <p id="rb-intro" class="muted"></p>
-
-    <div class="rb-list" id="rb-list"></div>
-
-    <div class="alert warn" id="rb-excluded" hidden></div>
-    <div class="alert error" id="rb-blocked" hidden></div>
-
+    <!-- Outside the scroll area: the arming step and the buttons are one
+         control, and hunting for the box you must type in is a bad way to
+         start a deletion. -->
     <label class="field" id="rb-confirm-field">
       <span class="field-label">Type <strong>DELETE</strong> to confirm</span>
       <input id="rb-confirm" type="text" autocomplete="off" spellcheck="false"
@@ -316,7 +342,7 @@
 
     <div class="modal-actions">
       <button class="btn ghost" id="rb-cancel">Cancel</button>
-      <button class="btn danger" id="rb-go" disabled>Delete them</button>
+      <button class="btn danger" id="rb-go" disabled>Delete</button>
     </div>
   </div>
 </div>
@@ -325,7 +351,7 @@
 <div class="modal-backdrop" id="rb-result" hidden>
   <div class="modal wide">
     <h3>Rollback report</h3>
-    <div id="rb-report"></div>
+    <div class="modal-body"><div id="rb-report"></div></div>
     <div class="modal-actions">
       <button class="btn" id="rb-done">Close</button>
     </div>

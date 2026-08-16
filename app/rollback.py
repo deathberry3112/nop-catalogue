@@ -1,7 +1,13 @@
 """Undo one run: delete the products that run created, and nothing else.
 
-    plan = build_plan(run_id)          # what would be deleted, and why
+    plan = build_plan(run_id)             # everything this run could undo
+    plan = narrow(plan, chosen)           # ...limited to what was selected
     report = execute(page, plan, store=store)
+
+A rollback does not have to be all-or-nothing: `narrow` takes the operator's
+selection and refuses anything that is not already in the plan, so a run can be
+undone a few products at a time. Each deletion releases its own claim, so the
+next plan is simply the remainder — repeat rollbacks need no extra bookkeeping.
 
 THIS MODULE DELETES THINGS FROM A LIVE CATALOGUE. Every design choice below is
 about making the blast radius exactly one run's creations, provably, and making
@@ -69,6 +75,14 @@ log = logging.getLogger("rollback")
 DELETABLE_STATUSES = {"added", "failed"}
 
 
+class SelectionError(ValueError):
+    """The operator's selection is not a subset of the current plan.
+
+    Always means nothing was deleted: narrow() runs before any page is opened,
+    so a bad selection is refused whole rather than applied in part.
+    """
+
+
 @dataclass(frozen=True)
 class Doomed:
     """One product the rollback would delete."""
@@ -134,11 +148,15 @@ def build_plan(run_id: str) -> Plan:
             "SELECT id, status, target_base_url, commit FROM runs WHERE id = %s",
             (run_id,),
         )
+        # Released claims are read too, not filtered out in SQL. They are the
+        # difference between "this run created nothing" and "you already
+        # deleted these", which are opposite facts — and with selective
+        # rollback a half-released run is the normal state, not an edge case.
         claimed = fetch_all(
             """
             SELECT sku, product_id, product_url, base_url, deleted_at
               FROM created_products
-             WHERE run_id = %s AND deleted_at IS NULL
+             WHERE run_id = %s
             """,
             (run_id,),
         )
@@ -164,8 +182,10 @@ def build_plan(run_id: str) -> Plan:
         return plan
 
     by_sku = {r["sku"]: r for r in rows}
+    released = [e for e in claimed if e.get("deleted_at")]
+    live = [e for e in claimed if not e.get("deleted_at")]
 
-    for entry in claimed:
+    for entry in live:
         sku = entry["sku"]
         row = by_sku.get(sku)
         status = (row or {}).get("status")
@@ -190,21 +210,38 @@ def build_plan(run_id: str) -> Plan:
             sku=sku, product_id=entry.get("product_id"),
             product_url=entry.get("product_url"), row_status=status))
 
+    # Already deleted, by an earlier rollback of this same run. Named
+    # individually because after a selective rollback this is the ordinary
+    # case, and "where did the other nine go?" deserves an answer in the
+    # dialog rather than a shrug.
+    released_skus = {e["sku"] for e in released}
+    for entry in sorted(released, key=lambda e: e["sku"]):
+        plan.excluded.append(
+            f"{entry['sku']} — already deleted by an earlier rollback of this "
+            f"run; nothing left to do")
+
     # Cross-check against the other record of what happened. A disagreement
     # does not block — created_products is the authoritative claim — but it is
-    # worth putting in front of whoever is about to press the button.
+    # worth putting in front of whoever is about to press the button. Released
+    # SKUs are excluded from the check: we know exactly why they are not in the
+    # plan, and reporting them as unprovable would be a lie.
     added = {r["sku"] for r in rows if r.get("status") == "added"}
     claimed_skus = {p.sku for p in plan.products}
-    for sku in sorted(added - claimed_skus):
+    for sku in sorted(added - claimed_skus - released_skus):
         plan.excluded.append(
             f"{sku} — the run reported it as added but there is no ownership "
             f"claim for it, so this cannot prove it created it; left alone")
 
     if not plan.products and not plan.blocked:
-        # Say WHICH kind of nothing. "created nothing" and "created things that
-        # are already gone" look identical here and mean opposite things to
-        # whoever is standing in front of the dialog.
-        if plan.excluded:
+        # Say WHICH kind of nothing. "created nothing", "already deleted" and
+        # "cannot prove we created them" look identical here and mean
+        # completely different things to whoever is standing in front of the
+        # dialog.
+        if released and len(released_skus) == len({e["sku"] for e in claimed}):
+            plan.blocked = (
+                f"every product this run created has already been deleted "
+                f"({len(released_skus)} of them) — there is nothing left to undo")
+        elif plan.excluded:
             plan.blocked = (
                 "nothing here can be deleted — this run's products are no "
                 "longer claimed by it. See below for each one.")
@@ -214,6 +251,38 @@ def build_plan(run_id: str) -> Plan:
 
     plan.products.sort(key=lambda p: p.sku)
     return plan
+
+
+def narrow(plan: Plan, skus) -> Plan:
+    """`plan`, limited to the products the operator actually selected.
+
+    Selective rollback replaced an exact-match confirmation ("the list you sent
+    must equal the list I computed") with a subset check, and the property that
+    check existed for has to survive the change. It does, because `plan` is
+    recomputed from the store immediately before this runs: a SKU the operator
+    was shown but which is no longer deletable — someone else rolled it back
+    meanwhile, or its claim was released — is simply not in `plan`, so it lands
+    in `unknown` and the WHOLE operation is refused rather than partly applied.
+
+    Nothing passed in here can widen the scope. The result is always a subset
+    of what build_plan derived from created_products, so an unrecognised SKU
+    stops the deletion; it never joins it.
+    """
+    wanted = {str(sku).strip() for sku in skus if str(sku).strip()}
+    if not wanted:
+        raise SelectionError(
+            "nothing was selected, so there is nothing to delete")
+
+    unknown = sorted(wanted - set(plan.skus))
+    if unknown:
+        raise SelectionError(
+            f"these are no longer in this run's deletable set: {unknown}. "
+            f"The catalogue moved since the dialog opened — nothing was "
+            f"deleted. Re-open it and check the list again")
+
+    return Plan(run_id=plan.run_id, base_url=plan.base_url,
+                products=[p for p in plan.products if p.sku in wanted],
+                excluded=list(plan.excluded), blocked=plan.blocked)
 
 
 def execute(page, plan: Plan, *, store=None, base_url: str = "") -> dict:
