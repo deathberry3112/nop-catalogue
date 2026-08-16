@@ -12,3 +12,8 @@ report.xlsx
 .venv/
 .idea/
 .claude/settings.local.json
+
+# Cursor: track project rules; ignore other local state
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**

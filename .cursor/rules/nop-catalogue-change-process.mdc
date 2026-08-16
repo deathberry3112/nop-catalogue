@@ -1,0 +1,54 @@
+---
+description: Mandatory E2E change harness — validate in code, verify invariants, then implement
+alwaysApply: true
+---
+
+# Change process (this repo)
+
+Do not implement from unused fallbacks or comments that contradict live modules. Authority, never invert: (1) live code (2) `/docs` (3) root `README.md`.
+
+## Hard stop — safety-sensitive edits
+
+Do not edit the areas below until you have:
+
+1. **Read** `docs/ARCHITECTURE_INVARIANTS.md` with the Read tool (**not from memory**)
+2. **Opened** the live modules on the affected path
+3. **Cited** the specific invariant rows that apply
+
+Treat “this is a small tweak” as unsafe until that gate passes.
+
+- Colour codes / combination SKUs / LLM: `app/colour/*`, `combination_skus.py`
+- Ownership / skip-vs-resume / ledger: `app/automation/runner.py`, `app/store/run_store.py`, `app/rollback.py`
+- Parser refusals / commit gate: `app/parser.py`, `main.run`, `main.partition`
+- Rollback deletion: `app/rollback.py`, `app/web/runs.py` `RunManager.rollback`
+- Secrets / public API / UI: `app/config.py`, `app/web/server.py`, `app/web/static/*`, `main.Credentials`
+- Admin writes / selectors: `pages/*`, `library.py`
+- Preview vs commit: `runner.run_batch`, `main.RunOptions.commit`
+
+## Product laws (intent only)
+
+Details and proof: `docs/ARCHITECTURE_INVARIANTS.md`. Do not freeze payload counts here.
+
+- A wrong catalogue with a clean report is the outcome to refuse.
+- Map / heuristic / LLM output is a proposal until `combination_map` verifies.
+- A SKU that exists and is not ours is skipped and never edited. Only `created_products` (or the local ledger fallback) proves ownership.
+- Preview fills and stops; Commit is the only save. Rollback deletes only what this run claimed.
+- Telemetry must never break automation. `/api/ping` is liveness; `/api/health` is capability.
+- Secrets stay server-side. Password is never in `repr`, health, or snapshots. There is no web auth today.
+- Unknown workbook columns block the row. Deterministic errors are never retried.
+
+## Visible change brief (before first code edit; skip only for pure Q&A)
+
+1. Success — user-visible vs internal
+2. E2E path — entry → … → UI/API; modules opened
+3. Assumptions — resolved against code or blocking
+4. Impact — must-change / must-not-change; contracts at risk
+5. Invariants — rows/sections cited
+6. Risks — `docs/CHANGE_PROCESS.md` brainstorm
+7. Plan — correct end-to-end behaviour, not the smallest incomplete patch
+
+## After implementing
+
+1. Verify: default offline set in `tests/README.md` for safety areas; `pytest -m live` when UI/admin contracts change
+2. Compatibility: API/UI/schema/env; never expose secrets to the client
+3. Update matching `/docs` in the **same change set**

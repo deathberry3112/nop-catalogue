@@ -3,15 +3,12 @@
 Playwright's sync API cannot run inside an asyncio event loop, so every run
 executes on its own worker THREAD and the API only ever reads the RunStore's
 in-memory snapshot. That keeps the HTTP layer responsive while a run holds a
-browser open for several minutes, and it is also the seam concurrency arrives
-through — MAX_CONCURRENT below is a semaphore, not a rewrite.
+browser open for several minutes. MAX_CONCURRENT is a semaphore around those
+threads, not a rewrite of the runner.
 
-This manager is deliberately in-process and therefore single-machine. It is the
-right amount of machinery for one worker running a handful of batches. The
-moment runs must survive a restart or spread across containers, the queue moves
-into Postgres (`select ... for update skip locked` against `runs`, which the
-schema already carries `worker_id` and `lease_expires_at` for) and this class
-becomes a thin client of it. Nothing above it changes when that happens.
+This manager is in-process and therefore single-machine. After a restart the
+in-memory run list is empty even if Postgres still has rows. Schema columns
+`worker_id` and `lease_expires_at` exist; there is no claim loop.
 """
 
 from __future__ import annotations

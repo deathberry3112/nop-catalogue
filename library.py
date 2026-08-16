@@ -3,7 +3,7 @@
 Helpers for writing the Playwright automation — the toolbox app/automation/*
 imports so the runner reads like the steps a human takes, not like DOM plumbing.
 
-    app -> JSON -> main.py -> [runner + library] -> summary -> xlsxCreator.py
+    xlsx -> parser -> main.run -> [runner + library] -> summary -> xlsxCreator.py
 
 main.py owns the browser; this module never launches one. Every function here
 takes an already-created `page` (or a Locator) and drives it. That keeps the

@@ -1,5 +1,7 @@
 # nopCommerce product upload
 
+**Implementers:** start at [`docs/README.md`](docs/README.md). Changes follow [`docs/CHANGE_PROCESS.md`](docs/CHANGE_PROCESS.md). Product laws with code proof: [`docs/ARCHITECTURE_INVARIANTS.md`](docs/ARCHITECTURE_INVARIANTS.md).
+
 Upload a product workbook, and it creates the products — with their
 specification, colour and size attributes, generated combinations, and the
 right child SKU on each combination.
@@ -11,6 +13,8 @@ right child SKU on each combination.
 
 ## Running it
 
+Laptop (Windows / Mac), including what is optional and the `python main.py` credential trap: [`docs/LOCAL.md`](docs/LOCAL.md).
+
 ```bash
 python -m pip install -r requirements.txt
 python -m playwright install chromium
@@ -18,7 +22,7 @@ cp .env.example .env          # then fill in ADMIN_* — see Configuration
 python -m app.web.server      # http://127.0.0.1:8000
 ```
 
-Tests, which need neither a browser nor credentials:
+Tests, which need neither a browser nor credentials. Which file proves which law: [`tests/README.md`](tests/README.md).
 
 ```bash
 pytest                        # unit tests
@@ -48,8 +52,9 @@ Apply the schema once against the Postgres instance (Railway Postgres, local, et
 python sql.py app/store/schema.sql
 ```
 
-It is idempotent, so re-running it after a change is safe. Until it is applied
-the header shows `store: schema missing` and runs simply are not recorded.
+It is idempotent, so re-running it after a change is safe. Until it is applied,
+`GET /api/health` reports `store_healthy: false` (often `UndefinedTable: relation "runs"`),
+the process logs that runs will not be recorded, and telemetry writes are dropped.
 
 ## How a run works
 
@@ -104,9 +109,7 @@ then held in the Colour map tab as *unconfirmed* until a human confirms them —
 verification proves an assignment is self-consistent, which is not the same as
 correct.
 
-On the current payload tier 3 fires **0%** of the time; tiers 1 and 2 resolve
-all 13 colours. That is the baseline to watch: a rising tier-3 share means the
-map needs curating.
+On the current checked-in payload, tier 3 fires 0% of the time; tiers 1 and 2 resolve the fixture colours. That share is a **fact to re-verify**, not a law — snippet and seed provenance: [`docs/COLOUR.md`](docs/COLOUR.md). A rising tier-3 share means the map needs curating.
 
 ## Failures
 
@@ -175,17 +178,23 @@ library.py         Playwright helpers (steps, retries, nop widgets)
 pages/             page objects: landing, manage products, product form
 combination_skus.py  splits child SKUs into (colour, size)
 xlsxCreator.py     rows + summary -> the re-uploadable report
-docs/DESIGN.md     design notes (colour, store, concurrency); some parts shipped
+docs/README.md     index, authority order, layer split
+docs/ARCHITECTURE_INVARIANTS.md  product + architecture laws with code proof
+docs/CHANGE_PROCESS.md  the change loop
+docs/ARCHITECTURE.md    stack and end-to-end path as implemented
 docs/RAILWAY.md    as-built Railway + Postgres production configuration
 docs/DEPLOYMENT-PLAN.md  why one container / Playwright image choices
+tests/README.md    which tests prove which laws
+.cursor/rules/     always-on agent change harness (tracked)
 ```
 
 ## Known gaps
 
-* **No authentication on the web layer.** Do not expose it as it stands.
+* **No authentication on the web layer.** Do not expose it as it stands. The
+  connection form is CSS-hidden (`app.css` `.conn`); runs use server `ADMIN_*`.
 * **Attributes beyond colour and size are not modelled.** A workbook with a
-  third attribute column is *rejected* rather than silently part-created — see
-  `docs/DESIGN.md` for what supporting it would take.
+  third attribute column is *rejected* rather than silently part-created
+  (`app/parser.py`).
 * **Concurrency needs Postgres.** The local JSON ledger is an unlocked
   read-modify-write, so two workers lose each other's entries. `created_products`
   fixes this; apply the schema before running anything concurrently.

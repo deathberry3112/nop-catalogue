@@ -1,5 +1,8 @@
 # Railway infrastructure — as built
 
+**Role:** Living ops inventory and runbook for the Railway deploy. IDs, URLs, and variable values are **facts** — re-verify; do not copy them into process rules.
+**Not for:** Product invariants ([`ARCHITECTURE_INVARIANTS.md`](ARCHITECTURE_INVARIANTS.md)) or Playwright-image rationale ([`DEPLOYMENT-PLAN.md`](DEPLOYMENT-PLAN.md)).
+
 This document describes the **production Railway deployment** for
 `nop-commerce-catalogue-automation`, and how the application expects to be
 configured. Facts below were taken from the Railway project and from the code
@@ -15,7 +18,7 @@ Related docs:
 
 - [`DEPLOYMENT-PLAN.md`](DEPLOYMENT-PLAN.md) — why one container, Playwright
   image choices, CORS, healthcheck philosophy
-- [`DESIGN.md`](DESIGN.md) — colour / store / concurrency design rationale
+- [`COLOUR.md`](COLOUR.md) / [`STORE.md`](STORE.md) — colour pipeline and run store
 - [`.env.example`](../.env.example) — every application variable
 
 ---
@@ -152,8 +155,7 @@ Without these, `/api/health` reports `admin_configured: false` and
 | `DATABASE_URL` | Railway `app` service, value reference `${{Postgres.DATABASE_URL}}` | Postgres wire URL for the run store |
 
 That reference resolves to a URL whose **host is `postgres.railway.internal`**
-(private project network). The app never talks to PostgREST and does not use a
-Supabase service key.
+(private project network). The app uses `psycopg2` and `DATABASE_URL` only.
 
 Without `DATABASE_URL`, the UI still works; runs stay in memory only and the
 ownership ledger falls back to `var/created-products.json`.
@@ -241,8 +243,8 @@ row.
   incompatible with multi-replica attachments in the usual setup.
 - In-process cap: `MAX_CONCURRENT = 4` Chromium instances
   ([`app/web/runs.py`](../app/web/runs.py)).
-- Schema columns `worker_id` / `lease_expires_at` exist for a future multi-worker
-  claim loop; that loop is **not** implemented.
+- Schema columns `worker_id` / `lease_expires_at` exist; there is **no** claim
+  loop. `RunManager` is in-process.
 
 ---
 
@@ -392,7 +394,6 @@ dropped; product automation continues.
 
 ## What this deployment deliberately is not
 
-- Not Supabase, not PostgREST, not OneClickSupabase
 - Not a multi-service “frontend / backend / RPA” split
 - Not authenticated at the web layer
 - Not automatically “safe to point at a live customer catalogue” until auth and
