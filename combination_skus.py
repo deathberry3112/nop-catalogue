@@ -164,20 +164,153 @@ def implied_size(row: dict) -> str | None:
     return sizes[0] if carried == 0 else None
 
 
+def size_aliases(row: dict) -> dict[str, str]:
+    """Trailing SKU tokens that abbreviate one of the row's sizes.
+
+    The Grainger sheets write the size into the child SKU but shorten it:
+    Sizes says "2XL"/"3XL" and the children end "2X"/"3X", while M/L/XL are
+    spelled out in full. Matching literally — which is all split_combination
+    does — resolves three of the five and refuses the other two, on one row
+    with one convention.
+
+    ONLY WHEN THE ROW HAS ALREADY PROVED THAT SIZES ARE WRITTEN, and that is
+    the whole safety argument. A trailing token is not self-evidently a size:
+    in "CP-20-100 A" it is a colour code and the size is implied. Prefix
+    matching a token nobody has established as a size is how "S" becomes
+    "Small" on a row whose S meant Smoke Lens — a plausible mapping onto the
+    wrong sizes, which is the one outcome this module exists to rule out.
+
+    So the rule is per ROW, never per combination:
+
+        every token matches a size exactly   -> nothing to alias
+        none match                           -> the convention is unproved; {}
+        some match, some do not              -> the row writes sizes, so the
+                                                leftovers are abbreviations
+
+    A row that abbreviates EVERY size ("2X"/"3X" and nothing spelled out) gets
+    an empty map and fails, deliberately: with no token spelled in full there
+    is nothing to distinguish it from a row whose trailing tokens are colour
+    codes, and refusing is the honest answer.
+
+    Matching is a prefix test on the raw casefolded text, NOT the _letters
+    helper the colour tiers use: _letters strips non-alphabetic characters, so
+    it reduces both "2X" and "3X" to "x" and both "2XL" and "3XL" to "xl" —
+    discarding precisely the digit that tells the two sizes apart. An
+    ambiguous hit is skipped rather than guessed, and two tokens competing for
+    one size cancel each other, so the result never depends on ordering.
+    """
+    sizes = row.get("sizes") or []
+    combinations = [c.strip() for c in (row.get("combinations") or []) if c.strip()]
+    if not sizes or not combinations:
+        return {}
+
+    base = base_prefix(row)
+    tokens: list[str] = []
+    for combination in combinations:
+        rest = combination
+        if rest.upper().startswith(base.upper()):
+            rest = rest[len(base):].strip()
+        parts = rest.split()
+        if parts and parts[-1].casefold() not in {t.casefold() for t in tokens}:
+            tokens.append(parts[-1])
+
+    wanted = {s.casefold(): s for s in sizes}
+    matched = [t for t in tokens if t.casefold() in wanted]
+    unmatched = [t for t in tokens if t.casefold() not in wanted]
+    if not matched or not unmatched:
+        return {}
+
+    taken = {t.casefold() for t in matched}
+    remaining = [s for s in sizes if s.casefold() not in taken]
+    candidates = {t: [s for s in remaining
+                      if s.casefold().startswith(t.casefold())] for t in unmatched}
+
+    aliases: dict[str, str] = {}
+    for token, hits in candidates.items():
+        if len(hits) != 1:
+            continue                        # ambiguous, and a tie is not an answer
+        # Two tokens that both point at one size cancel: assigning either would
+        # be a coin flip decided by iteration order.
+        if sum(1 for other in candidates.values() if other == hits) != 1:
+            continue
+        aliases[token.casefold()] = hits[0]
+    return aliases
+
+
+def implied_colour(row: dict) -> str | None:
+    """The colour every combination carries without writing it, or None.
+
+    The mirror of implied_size, and it exists for the same reason. A row with
+    ONE colour often does not bother encoding it — the Grainger vests spell
+    their children "CP-SV4GM" + size ("CP-SV4GMM", "CP-SV4GM2X") with no
+    colour code anywhere. Stripping the base and the size then leaves nothing,
+    and the row failed with "has a size but no colour code" even though there
+    was only ever one colour it could be.
+
+    Refusing that was refusing arithmetic: 1 colour x 5 sizes is 5
+    combinations and there are 5 child SKUs, so the pairing is forced. Same
+    derivation implied_size already makes in the other direction.
+
+    DECIDED PER ROW, and only when EVERY combination is bare. A row where some
+    children carry a colour code and some do not is ambiguous — is the bare
+    one a missing code, or a code that happens to look like a size? — so it
+    returns None and the caller raises exactly as it did before.
+
+    Note this is not reachable with two or more colours: the codes are what
+    tell them apart, so a row that omits them is unknowable, not implied.
+    """
+    colours = row.get("colors") or []
+    combinations = [c.strip() for c in (row.get("combinations") or []) if c.strip()]
+    if len(colours) != 1 or not combinations:
+        return None
+
+    base = base_prefix(row)
+    sizes = row.get("sizes") or []
+    implied = implied_size(row)
+    aliases = size_aliases(row)
+    wanted = {s.casefold(): s for s in sizes}
+
+    for combination in combinations:
+        rest = combination
+        if rest.upper().startswith(base.upper()):
+            rest = rest[len(base):].strip()
+        # implied is not None means no combination writes its size, so there is
+        # nothing to strip and whatever is here is a colour code.
+        if implied is None and sizes:
+            tokens = rest.split()
+            key = tokens[-1].casefold() if tokens else ""
+            if key in wanted or key in aliases:
+                rest = " ".join(tokens[:-1]).strip()
+        if rest:
+            return None                     # a code is written; nothing implied
+    return colours[0]
+
+
 def split_combination(combination: str, sku: str, sizes: list[str],
-                      *, implied: str | None = None) -> tuple[str, str | None]:
+                      *, implied: str | None = None,
+                      aliases: dict[str, str] | None = None,
+                      colour_implied: bool = False) -> tuple[str, str | None]:
     """Split a combination SKU into (colour code, size) — "CP-V-200 LE 2XL" ->
     ("LE", "2XL").
 
-    Sizes are matched literally because the payload writes them literally: the
-    trailing token of every combination is the size name exactly as it appears
-    in `sizes` ("OS", "2XL"). Whatever is left once the base SKU and the size
-    are removed is the colour code.
+    Sizes are matched literally because the payload usually writes them
+    literally: the trailing token of every combination is the size name
+    exactly as it appears in `sizes` ("OS", "2XL"). Whatever is left once the
+    base SKU and the size are removed is the colour code.
+
+    `aliases` (from size_aliases) covers the rows that abbreviate the size
+    instead, and `colour_implied` (from implied_colour) the rows that never
+    write a colour code — in which case the code comes back as "" and the
+    caller maps it to the row's only colour. Both default off, so a caller
+    that passes neither behaves exactly as it always did.
     """
+    aliases = aliases or {}
     rest = combination.strip()
     if rest.upper().startswith(sku.upper()):
         rest = rest[len(sku):].strip()
     if not rest:
+        if colour_implied and not sizes:
+            return "", None                 # the child SKU *is* the parent SKU
         raise CombinationError(f"{combination!r} adds nothing to the SKU {sku!r}")
 
     size = None
@@ -188,13 +321,16 @@ def split_combination(combination: str, sku: str, sizes: list[str],
     elif sizes:
         tokens = rest.split()
         wanted = {s.casefold(): s for s in sizes}
-        if tokens and tokens[-1].casefold() in wanted:
-            size = wanted[tokens[-1].casefold()]
+        key = tokens[-1].casefold() if tokens else ""
+        if key in wanted or key in aliases:
+            size = wanted.get(key) or aliases[key]
             rest = " ".join(tokens[:-1]).strip()
         else:
             raise CombinationError(
                 f"{combination!r} does not end in one of the row's sizes {sizes}")
     if not rest:
+        if colour_implied:
+            return "", size
         raise CombinationError(f"{combination!r} has a size but no colour code")
     return rest, size
 
@@ -209,12 +345,18 @@ def colour_codes(row: dict) -> dict[str, str]:
     if not colours:
         return {}
 
+    # One colour that no child SKU names has exactly one possible code: none.
+    # Nothing to score, and no tier can improve on arithmetic.
+    if implied_colour(row) is not None:
+        return {colours[0]: ""}
+
     base = base_prefix(row)
     implied = implied_size(row)
+    aliases = size_aliases(row)
     codes = []
     for combination in row.get("combinations") or []:
         code, _ = split_combination(combination, base, row.get("sizes") or [],
-                                    implied=implied)
+                                    implied=implied, aliases=aliases)
         if code not in codes:
             codes.append(code)
 
@@ -275,10 +417,14 @@ def combination_map(row: dict, codes: dict[str, str] | None = None
     sizes = row.get("sizes") or []
     base = base_prefix(row)
     implied = implied_size(row)
+    aliases = size_aliases(row)
+    colour_implied = implied_colour(row) is not None
 
     mapping: dict[tuple[str, str | None], str] = {}
     for combination in row.get("combinations") or []:
-        code, size = split_combination(combination, base, sizes, implied=implied)
+        code, size = split_combination(combination, base, sizes, implied=implied,
+                                       aliases=aliases,
+                                       colour_implied=colour_implied)
         colour = by_code.get(code)
         if colour is None:
             raise CombinationError(

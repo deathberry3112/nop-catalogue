@@ -69,9 +69,11 @@ def _extract_codes(row: dict) -> list[str]:
     codes: list[str] = []
     base = combination_skus.base_prefix(row)
     implied = combination_skus.implied_size(row)
+    aliases = combination_skus.size_aliases(row)
     for combination in row.get("combinations") or []:
         code, _ = combination_skus.split_combination(
-            combination, base, row.get("sizes") or [], implied=implied)
+            combination, base, row.get("sizes") or [], implied=implied,
+            aliases=aliases)
         if code not in codes:
             codes.append(code)
     return codes
@@ -118,6 +120,21 @@ def resolve(row: dict, *, allow_llm: bool = True) -> Resolution:
 
     if not colours:
         resolution.verified = True                      # nothing to resolve
+        return resolution
+
+    # A single colour that no child SKU names is settled before any tier runs.
+    # There is no code to match it to, so the map cannot hit, the heuristic has
+    # nothing to score, and asking the model which of zero codes belongs to
+    # "Lime" would spend 500ms to be told what arithmetic already knows.
+    # Still verified below like every other answer.
+    if combination_skus.implied_colour(row) is not None:
+        resolution.codes = {colours[0]: ""}
+        resolution.tiers = {colours[0]: Tier.HEURISTIC}
+        try:
+            combination_skus.combination_map(row, resolution.codes)
+            resolution.verified = True
+        except combination_skus.CombinationError as exc:
+            resolution.error = f"resolved colours did not verify: {exc}"
         return resolution
 
     try:
