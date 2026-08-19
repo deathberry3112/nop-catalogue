@@ -209,3 +209,53 @@ def test_an_out_of_set_code_from_the_model_is_dropped(monkeypatch):
            "generate_combinations": True, "combinations": ["X ZZQ", "X QQZ"]}
     resolution = resolve(row)
     assert not resolution.ok           # refused, not written into the catalogue
+
+
+# --- the current template: no tier runs -------------------------------------
+
+def _stated() -> dict:
+    """A row from the one-line-per-variant template."""
+    return {
+        "sku": "S", "source_sheet": "Vest",
+        "colors": ["Lime", "Orange"], "sizes": ["S"],
+        "combinations": ["S-01", "S-02"],
+        "variants": [{"color": "Lime", "size": "S", "sku": "S-01"},
+                     {"color": "Orange", "size": "S", "sku": "S-02"}],
+    }
+
+
+def test_a_stated_pairing_needs_no_tier_at_all():
+    """The template answers the question the tiers exist to answer. Note the
+    child SKUs here ('S-01', 'S-02') carry no colour code, so every tier would
+    fail on this row — and it resolves anyway."""
+    resolution = resolve(_stated(), allow_llm=False)
+    assert resolution.ok
+    assert resolution.tier_counts == {"explicit": 2}
+    assert resolution.codes == {}, "there is no code to resolve"
+
+
+def test_the_model_is_never_asked_about_a_stated_pairing(monkeypatch):
+    import app.colour.llm as llm_tier
+    monkeypatch.setattr(llm_tier, "available", lambda: True)
+    monkeypatch.setattr(llm_tier, "infer", lambda *a, **k: pytest.fail(
+        "the sheet already said which SKU is which colour"))
+    assert resolve(_stated(), allow_llm=True).ok
+
+
+def test_a_stated_pairing_is_still_verified():
+    """It earns no more trust than an inferred one — it just costs nothing."""
+    row = _stated()
+    row["sizes"] = ["S", "M"]                       # 2 x 2, only 2 stated
+    resolution = resolve(row, allow_llm=False)
+    assert not resolution.ok
+    assert "expected 4" in resolution.error
+
+
+def test_nothing_is_persisted_to_the_map_from_a_stated_pairing():
+    """The map records what only the model could work out. A sheet stating its
+    own pairing teaches it nothing, and writing to it would fill the review
+    queue with rows no human ever needs to confirm."""
+    import app.colour.store as store
+    before = dict(store.MAP.entries)
+    assert resolve(_stated(), allow_llm=False).ok
+    assert store.MAP.entries == before

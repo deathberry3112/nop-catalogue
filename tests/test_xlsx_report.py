@@ -32,6 +32,8 @@ def _row(**over) -> dict:
         "generate_combinations": True,
         "allow_out_of_stock": False,
         "combinations": ["SKU-1 YW", "SKU-1 BE"],
+        "variants": [{"color": "Yellow", "size": None, "sku": "SKU-1 YW"},
+                     {"color": "Blue", "size": None, "sku": "SKU-1 BE"}],
         "save_product": True,
         "source_sheet": "HardHat",
         "errors": [],
@@ -102,23 +104,59 @@ def test_done_statuses_match_mains_skip_list():
 # --- row -> cells ----------------------------------------------------------
 
 def test_cells_line_up_with_the_template_headers():
-    assert len(xc.row_to_cells(_row())) == len(xc.TEMPLATE_HEADERS)
+    assert all(len(line) == len(xc.TEMPLATE_HEADERS)
+               for line in xc.row_to_lines(_row()))
 
 
-def test_empty_sizes_render_as_na():
-    cells = xc.row_to_cells(_row(sizes=[]))
-    assert cells[xc.TEMPLATE_HEADERS.index("Sizes")] == "NA"
+def test_a_product_is_written_one_line_per_variant():
+    """The mirror of the parser, which reads one line per variant and groups
+    lines sharing a SKU. A report written any other way cannot be re-uploaded."""
+    lines = xc.row_to_lines(_row())
+    assert len(lines) == 2
+    colour = xc.TEMPLATE_HEADERS.index("Color")
+    assert [line[colour] for line in lines] == ["Yellow", "Blue"]
+
+
+def test_a_colour_only_product_leaves_the_size_cell_empty():
+    lines = xc.row_to_lines(_row(sizes=[]))
+    assert all(line[xc.TEMPLATE_HEADERS.index("Size")] == "" for line in lines)
+
+
+def test_each_line_carries_its_own_size():
+    row = _row(sizes=["S", "M"],
+               combinations=["SKU-1 YW S", "SKU-1 YW M"],
+               colors=["Yellow"], swatches=["Yellow"],
+               variants=[{"color": "Yellow", "size": "S", "sku": "SKU-1 YW S"},
+                         {"color": "Yellow", "size": "M", "sku": "SKU-1 YW M"}])
+    size = xc.TEMPLATE_HEADERS.index("Size")
+    assert [line[size] for line in xc.row_to_lines(row)] == ["S", "M"]
 
 
 def test_booleans_render_as_yes_no():
-    cells = xc.row_to_cells(_row(generate_combinations=True, allow_out_of_stock=False))
+    cells = xc.row_to_lines(_row(generate_combinations=True,
+                                 allow_out_of_stock=False))[0]
     assert cells[8] == "Yes"
     assert cells[9] == "No"
 
 
-def test_combinations_are_newline_joined_into_one_cell():
-    cells = xc.row_to_cells(_row(combinations=["A", "B", "C"]))
-    assert cells[10] == "A\nB\nC"
+def test_each_line_carries_one_child_sku():
+    lines = xc.row_to_lines(_row())
+    assert [line[10] for line in lines] == ["SKU-1 YW", "SKU-1 BE"]
+
+
+def test_a_swatch_stays_with_its_colour():
+    row = _row(colors=["Yellow", "Blue"], swatches=["Hi-Vis Yellow", "Royal Blue"])
+    swatch = xc.TEMPLATE_HEADERS.index("Color Swatch")
+    assert [line[swatch] for line in xc.row_to_lines(row)] == \
+           ["Hi-Vis Yellow", "Royal Blue"]
+
+
+def test_a_product_with_no_variants_still_gets_a_line():
+    """A row that failed before it had any must survive the report so it can be
+    corrected in place, rather than vanishing from the file it was in."""
+    lines = xc.row_to_lines(_row(variants=[], combinations=[]))
+    assert len(lines) == 2                          # one per colour
+    assert all(line[10] == "" for line in lines)    # no child SKU to write
 
 
 # --- the workbook itself ---------------------------------------------------
@@ -134,8 +172,8 @@ def test_report_groups_rows_by_source_sheet(tmp_path):
 
     wb = openpyxl.load_workbook(out)
     assert wb.sheetnames == ["HardHat", "Vest"]          # first-seen order
-    assert wb["HardHat"].max_row == 3                    # header + 2 rows
-    assert wb["Vest"].max_row == 2
+    assert wb["HardHat"].max_row == 5                    # header + 2 products x 2
+    assert wb["Vest"].max_row == 3
 
 
 def test_report_appends_status_and_note_columns(tmp_path):

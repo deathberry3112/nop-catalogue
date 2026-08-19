@@ -314,3 +314,63 @@ def test_an_override_wins():
         assert cs.colour_codes(row) == {"Chartreuse": "ZZ"}
     finally:
         del cs.OVERRIDES["Chartreuse"]
+
+
+# --- the current template: the pairing is stated, not inferred --------------
+
+def _stated(**over) -> dict:
+    row = {
+        "sku": "S", "colors": ["Lime", "Orange"], "sizes": ["S", "M"],
+        "combinations": ["S LE S", "S LE M", "S OE S", "S OE M"],
+        "variants": [{"color": "Lime", "size": "S", "sku": "S LE S"},
+                     {"color": "Lime", "size": "M", "sku": "S LE M"},
+                     {"color": "Orange", "size": "S", "sku": "S OE S"},
+                     {"color": "Orange", "size": "M", "sku": "S OE M"}],
+    }
+    row.update(over)
+    return row
+
+
+def test_a_stated_pairing_is_used_verbatim():
+    """One line per variant means the sheet says which child SKU goes where.
+    Nothing is recovered from the SKU text — note these codes (LE/OE) would
+    also resolve by inference, which is exactly why the test uses codes that
+    would NOT: see the next one."""
+    assert cs.combination_map(_stated()) == {
+        ("Lime", "S"): "S LE S", ("Lime", "M"): "S LE M",
+        ("Orange", "S"): "S OE S", ("Orange", "M"): "S OE M",
+    }
+
+
+def test_child_skus_that_no_heuristic_could_pair_still_map():
+    """The client's hard hats number their children instead of coding them —
+    'CP-280-HP241R-01' says nothing about White. Under the old template that
+    was unresolvable; stated, it is not a question at all."""
+    row = _stated(sizes=[], colors=["White", "Red"],
+                  combinations=["CP-280-01", "CP-280-15"],
+                  variants=[{"color": "White", "size": None, "sku": "CP-280-01"},
+                            {"color": "Red", "size": None, "sku": "CP-280-15"}])
+    assert cs.combination_map(row) == {("White", None): "CP-280-01",
+                                       ("Red", None): "CP-280-15"}
+
+
+def test_a_supplied_code_map_is_ignored_when_the_sheet_stated_the_pairing():
+    """resolve() returns no codes on this path, and a stale one must not be
+    able to redirect a child SKU onto the wrong colour."""
+    assert cs.combination_map(_stated(), {"Lime": "OE", "Orange": "LE"}) == \
+           cs.combination_map(_stated())
+
+
+def test_a_stated_pairing_still_answers_to_the_count_check():
+    row = _stated(sizes=["S", "M", "L"])            # 2 x 3, only 4 stated
+    with pytest.raises(cs.CombinationError, match="expected 6"):
+        cs.combination_map(row)
+
+
+def test_two_lines_claiming_one_combination_are_refused_not_collapsed():
+    """Building the map without this check would drop one silently, which is
+    the one thing a caller of this module may assume never happens."""
+    row = _stated()
+    row["variants"][1]["size"] = "S"                # now two for Lime / S
+    with pytest.raises(cs.CombinationError, match="two combinations"):
+        cs.combination_map(row)

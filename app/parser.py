@@ -10,6 +10,43 @@ the round-trip test (tests/test_parser.py) fails until both are done.
     result.rows      -> the same shape main.load_rows() produces
     result.errors    -> problems that stopped a sheet being read at all
 
+ONE SHEET ROW IS ONE VARIANT, NOT ONE PRODUCT. This is the template change the
+rest of the module is shaped around. The sheet spells out every combination
+individually — one colour, one size, one child SKU per line — and rows sharing
+a SKU are one product:
+
+    Product name  SKU          Color   Size     Child SKU Varient
+    G55FF - M     G55FF - M    Lime    S/M      G55FF08
+    G55FF - M     G55FF - M    Lime    L/XL     G55FF10
+    G55FF - M     G55FF - M    Orange  S/M      G55FF14
+    G55FF - M     G55FF - M    Orange  L/XL     G55FF16
+
+    -> one product, 2 colours x 2 sizes, and the sheet SAYS which child SKU
+       belongs to ("Orange", "L/XL") instead of leaving it to be inferred.
+
+THE GROUPING KEY IS THE SKU, never the product name. Two rows may share a
+product name and still be different products — the client's sheets do exactly
+that, listing eight one-variant products under a single display name — so
+grouping on the name would silently fuse eight products into one. The SKU is
+what this automation looks a product up by and creates it with, so it is what
+decides identity here.
+
+WHAT THE OLD TEMPLATE COST, AND WHAT THIS BUYS. The previous layout packed a
+product onto one line, with colours comma-separated and every child SKU in a
+single cell, and never said which was which. combination_skus.py exists to
+recover that pairing from the SKU text ("CP-30-C100V YW" -> Yellow) and
+app/colour/ exists to fall back to a curated map and then a model when the text
+does not give it up. None of that inference runs on this template: the pairing
+is read, not guessed. Those modules stay in the tree — untouched and still
+tested — because they remain the only thing that can read a workbook written
+the old way, but nothing on this path calls them to *derive* anything any more.
+
+That also makes the old layout unreadable HERE, and deliberately so. A cell
+holding "Lime, Orange" against nine child SKUs is not a variant line; parsing
+it as one would produce a product with two colours and nine unpaired children
+and no complaint. So a sheet still written that way is refused with a message
+saying which it is — see _detect_legacy_layout.
+
 WHAT THIS REFUSES TO DO IS THE POINT. A column it does not recognise is
 reported, never ignored. The previous analysis of this pipeline found that an
 unexpected attribute column (say "Material") would most likely be dropped in
@@ -75,6 +112,22 @@ SIZE_COLUMN_MISSING = ("no second 'Product Attributes Type' column to name the "
 SIZE_COLUMN_WRONG = ("the second 'Product Attributes Type' column should say "
                      "'Size', not the colour attribute — assuming 'Size'")
 
+#: The per-variant fields. Everything else on a line describes the PRODUCT, and
+#: so has to agree across every line sharing a SKU — see _merge.
+VARIANT_FIELDS = ("colors", "sizes", "combinations")
+
+#: Product-level fields, and how to name them when two lines disagree. The
+#: wording is what the user sees, so it names the column, not the field.
+SHARED_FIELDS: dict[str, str] = {
+    "product_name": "Product name",
+    "spec_value": "Attribute Specification Value",
+    "color_attr": "the first 'Product Attributes Type'",
+    "size_attr": "the second 'Product Attributes Type'",
+    "generate_combinations": "Generate Combinations",
+    "allow_out_of_stock": "Allow Out Of Stock",
+    "save_product": "Save Product",
+}
+
 
 @dataclass
 class ParseResult:
@@ -128,7 +181,15 @@ def _flag(value: Any, *, default: bool = False) -> bool:
 
 def _split(value: Any, *, sep: str = ",") -> list[str]:
     """Split a cell into a list. Handles both separators the template uses:
-    newlines (the combination column) and commas (colours, sizes)."""
+    newlines (the combination column) and commas (colours, sizes).
+
+    On this template every one of those cells should hold exactly ONE entry, so
+    this is now used to detect the old layout rather than to read it — a cell
+    that splits into two is a line describing a whole product. Sizes are the
+    reason it still splits on commas rather than being read verbatim: "S/M" and
+    "4XL/5XL" are single sizes that happen to contain a slash, so the separator
+    has to stay the comma to leave them intact.
+    """
     text = _text(value)
     if not text or _norm(text) == "na":
         return []
@@ -161,41 +222,149 @@ def _map_headers(header_row: tuple) -> tuple[dict[int, str], list[str]]:
     return mapping, unknown
 
 
-def _parse_row(values: tuple, mapping: dict[int, str], *, sheet: str,
-               row_number: int, unknown_headers: list[str]) -> dict | None:
-    """One worksheet row -> one payload row, or None if the line is blank."""
+def _read_variant(values: tuple, mapping: dict[int, str], *, sheet: str,
+                  row_number: int) -> dict | None:
+    """One worksheet line -> one variant record, or None if the line is blank.
+
+    Nothing is validated here. This is a transcription: the cells this line
+    holds, split out of the sheet and into fields, so _detect_legacy_layout can
+    judge the sheet's shape and _merge can group by SKU. Validation happens on
+    the assembled product, because that is the level most of the questions are
+    asked at ("do these colours and sizes cover every child SKU?").
+    """
     raw = {field: values[i] for i, field in mapping.items() if i < len(values)}
     if not any(_text(v) for v in raw.values()):
         return None
 
-    row: dict[str, Any] = {
+    return {
         "sku": _text(raw.get("sku")),
         "product_name": _text(raw.get("product_name")) or _text(raw.get("sku")),
         "spec_value": _text(raw.get("spec_value")),
         "color_attr": _text(raw.get("color_attr")) or "Color",
+        "size_attr": _text(raw.get("size_attr")) or "Size",
         "colors": _split(raw.get("colors")),
         "swatches": _split(raw.get("swatches")),
-        "size_attr": _text(raw.get("size_attr")) or "Size",
         "sizes": _split(raw.get("sizes")),
+        "combinations": _split(raw.get("combinations")),
         "generate_combinations": _flag(raw.get("generate_combinations")),
         "allow_out_of_stock": _flag(raw.get("allow_out_of_stock")),
-        "combinations": _split(raw.get("combinations")),
-        "duplicates": {},          # filled by _validate; the console offers a fix
         "save_product": _flag(raw.get("save_product"), default=True),
+        "status": _text(raw.get("status")),
         "source_sheet": sheet,
         "source_row": row_number,
+        # Whether the sheet named the size attribute at all, per line, so the
+        # assembled product can warn about it without re-reading the mapping.
+        "_has_size_column": "size_attr" in mapping.values(),
+    }
+
+
+def _detect_legacy_layout(sheet: str, variants: list[dict]) -> str | None:
+    """Is this sheet written to the OLD one-row-per-product template?
+
+    Told apart by arity, which is the only difference that cannot be faked: on
+    this template a line carries one colour, one size and one child SKU, so any
+    cell holding two entries is a line describing a whole product.
+
+    Refusing beats reading it. The two layouts disagree about what a row MEANS,
+    not about how it is spelled, and the columns are identical — so a legacy
+    sheet parsed as variants comes out as a product per line, each with a
+    colour list where a colour should be and a pile of unpaired child SKUs.
+    Every check below would pass it. It would reach the runner and create a
+    catalogue nobody asked for, which is precisely the silent-wrong-catalogue
+    outcome this module is written to prevent.
+
+    A legacy sheet holding exactly one product with one colour, one size and
+    one child SKU is indistinguishable from a variant sheet — and needs no
+    telling apart, because the two readings produce the same product.
+    """
+    for variant in variants:
+        packed = {label: len(variant[field])
+                  for field, label in (("colors", "colour"), ("sizes", "size"),
+                                       ("combinations", "child SKU"))
+                  if len(variant[field]) > 1}
+        if not packed:
+            continue
+        listed = ", ".join(f"{count} {label}s" for label, count in packed.items())
+        return (
+            f"{sheet}: this sheet is written to the OLD template — row "
+            f"{variant['source_row']} ({variant['sku'] or 'no SKU'}) packs "
+            f"{listed} onto one line. The current template is one line per "
+            f"variant: one colour, one size and one child SKU each, with every "
+            f"line of a product repeating its SKU. Re-export the sheet in that "
+            f"format. Nothing on this sheet was read.")
+    return None
+
+
+def _merge(variants: list[dict], unknown_headers: list[str]) -> dict:
+    """A product's variant lines -> the one row the rest of the pipeline runs.
+
+    The assembled row is the shape it has always been — colours, sizes and
+    child SKUs as parallel lists — so the runner, the report and the rollback
+    need no changes. What is new is `variants`, which carries the pairing the
+    sheet stated:
+
+        row["variants"] -> [{"color": "Lime", "size": "S/M", "sku": "G55FF08"},
+                            ...]
+
+    combination_skus.combination_map() reads that instead of inferring it. It
+    is a list of dicts rather than the {(colour, size): sku} mapping the runner
+    wants because rows are JSON — they are persisted to the run store and
+    handed to the browser — and a tuple key survives neither.
+    """
+    first = variants[0]
+
+    row: dict[str, Any] = {
+        "sku": first["sku"],
+        "product_name": first["product_name"],
+        "spec_value": first["spec_value"],
+        "color_attr": first["color_attr"],
+        "size_attr": first["size_attr"],
+        "colors": _unique(v["colors"][0] for v in variants if v["colors"]),
+        "sizes": _unique(v["sizes"][0] for v in variants if v["sizes"]),
+        "swatches": [],
+        "combinations": [v["combinations"][0] for v in variants if v["combinations"]],
+        "variants": [],
+        "generate_combinations": first["generate_combinations"],
+        "allow_out_of_stock": first["allow_out_of_stock"],
+        "duplicates": {},          # legacy-layout affordance; unreachable here
+        "save_product": first["save_product"],
+        "source_sheet": first["source_sheet"],
+        "source_row": first["source_row"],
+        "source_rows": [v["source_row"] for v in variants],
         "errors": [],
         "warnings": [],
     }
 
-    status = _text(raw.get("status"))
+    # One swatch per colour, taken from the lines naming that colour. Under the
+    # old template the two columns were parallel lists and stayed aligned only
+    # by luck; here each line carries its own pair, so the swatch cannot drift
+    # onto the wrong colour. A colour whose lines disagree is reported by
+    # _validate rather than resolved.
+    swatches: dict[str, list[str]] = {}
+    for variant in variants:
+        if variant["colors"] and variant["swatches"]:
+            swatches.setdefault(variant["colors"][0], []).append(variant["swatches"][0])
+    row["_swatches_by_colour"] = swatches
+    row["swatches"] = [swatches[c][0] for c in row["colors"] if c in swatches]
+
+    for variant in variants:
+        if not variant["combinations"]:
+            continue
+        row["variants"].append({
+            "color": variant["colors"][0] if variant["colors"] else "",
+            "size": variant["sizes"][0] if variant["sizes"] else None,
+            "sku": variant["combinations"][0],
+            "source_row": variant["source_row"],
+        })
+
+    status = next((v["status"] for v in variants if v["status"]), "")
     if status:
         row["status"] = status                 # a re-uploaded report: resume it
 
     # The two "Product Attributes Type" columns are positional, so the second
     # one naming "Color" names the SAME attribute twice. Not a harmless typo:
     # add_attribute is idempotent BY NAME, so the size pass would fetch the
-    # colour attribute back and file "OS" as a ninth colour. A blank cell
+    # colour attribute back and file "S/M" as a ninth colour. A blank cell
     # already falls back to "Size"; a cell repeating the colour attribute means
     # the same thing, so it is treated the same way.
     #
@@ -204,19 +373,19 @@ def _parse_row(values: tuple, mapping: dict[int, str], *, sheet: str,
     # one of twenty rows is noise, but the row still needs a warning so it does
     # not tick itself for committing.
     if row["sizes"]:
-        if "size_attr" not in mapping.values():
+        if not first["_has_size_column"]:
             row["warnings"].append(SIZE_COLUMN_MISSING)
             row["size_attr"] = "Size"
         elif row["size_attr"] == row["color_attr"]:
             row["warnings"].append(SIZE_COLUMN_WRONG)
             row["size_attr"] = "Size"
 
-    _validate(row, unknown_headers)
+    _validate(row, variants, unknown_headers)
     return row
 
 
-def _validate(row: dict, unknown_headers: list[str]) -> None:
-    """Everything wrong with this row, all at once."""
+def _validate(row: dict, variants: list[dict], unknown_headers: list[str]) -> None:
+    """Everything wrong with this product, all at once."""
     errors, warnings = row["errors"], row["warnings"]
 
     if not row["sku"]:
@@ -233,67 +402,130 @@ def _validate(row: dict, unknown_headers: list[str]) -> None:
             f"models colour and size attributes, and will not create a product "
             f"from a sheet it does not fully understand")
 
+    # These columns describe the PRODUCT, so every line of it has to agree. Two
+    # lines sharing a SKU and disagreeing about the name (or about whether to
+    # save it) do not describe a product this can create — one of the two
+    # answers would have to be discarded, and nothing here knows which.
+    _check_agreement(row, variants)
+
+    # Each colour's swatch comes off its own line now, so a disagreement is a
+    # real contradiction rather than the old column-alignment guess.
+    for colour, values in (row.pop("_swatches_by_colour", None) or {}).items():
+        distinct = _unique(values)
+        if len(distinct) > 1:
+            errors.append(
+                f"{colour!r} is given {len(distinct)} different swatches "
+                f"{distinct} — one colour has one swatch")
+
     if row["swatches"] and len(row["swatches"]) != len(row["colors"]):
         warnings.append(
             f"{len(row['swatches'])} swatch(es) for {len(row['colors'])} colour(s)")
 
-    # A WARNING WITH A DECISION ATTACHED, not something to fix silently.
-    # CP-20-200 lists "…Clear Lens" twice and "CP-20-200 BK C" twice: 13
-    # entries, 12 distinct. Dropping the extra is almost certainly right — but
-    # only almost. If that second entry was meant to be a different lens
-    # somebody forgot to rename, removing it deletes a product variant and says
-    # nothing. So the console offers to remove them and a human decides; left
-    # alone, the row behaves exactly as it does today (it fails the count check
-    # in combination_skus, which is the honest outcome for contradictory data).
-    duplicate_colours = _repeated(row["colors"])
-    duplicate_skus = _repeated(row["combinations"])
-    if duplicate_colours or duplicate_skus:
-        row["duplicates"] = {"colors": duplicate_colours,
-                             "combinations": duplicate_skus}
-        parts = []
-        if duplicate_colours:
-            parts.append(f"{len(duplicate_colours)} colour(s) {duplicate_colours}")
-        if duplicate_skus:
-            parts.append(f"{len(duplicate_skus)} child SKU(s) {duplicate_skus}")
-        warnings.append(
-            f"{DUPLICATE_WARNING} {' and '.join(parts)} listed more than once — "
-            f"remove the extras, or leave them and this row will fail when its "
-            f"combinations are counted")
+    _check_grid(row)
 
-    if row["generate_combinations"]:
-        if not row["colors"]:
-            errors.append("Generate Combinations is set but no colours are listed")
-        expected = len(row["colors"]) * max(1, len(row["sizes"]))
-        actual = len(row["combinations"])
-        if actual and actual != expected:
-            errors.append(
-                f"{actual} child SKU(s) for {len(row['colors'])} colour(s) x "
-                f"{max(1, len(row['sizes']))} size(s) — expected {expected}")
-        if not actual:
-            errors.append("Generate Combinations is set but no child SKUs are listed")
-
-    # A WARNING, NOT AN ERROR — deliberately, and it is the one check here that
-    # is. The others describe data this pipeline cannot act on; this one
-    # describes data it can. A child SKU that does not extend the parent is
-    # nearly always one mistyped cell (SKU "20-100ECO" against children
-    # "CP-20-100ECO C/CAF/S/SAF"), and combination_skus.base_prefix recovers
-    # the real base from the combinations themselves, so the row still resolves
-    # to the right colour codes and the right child SKUs.
+    # WHAT IS NOT CHECKED HERE, AND WHY IT USED TO BE. The old parser warned
+    # when a child SKU did not start with the parent's, because the old
+    # template made that prefix load-bearing: combination_skus.base_prefix
+    # stripped it off to recover the colour code, so a parent SKU that did not
+    # match its children was the first sign a row was about to be mapped wrong.
     #
-    # What the parent SKU actually governs is the product this automation looks
-    # up and creates; the children are written verbatim from the sheet. So the
-    # mismatch cannot silently produce a wrong child SKU — the failure mode the
-    # module docstring is about — and blocking the batch over it only stopped
-    # the other rows from committing too.
-    mismatched = [c for c in row["combinations"]
-                  if row["sku"] and not c.upper().startswith(row["sku"].upper())]
-    if mismatched:
-        shown = ", ".join(repr(c) for c in mismatched[:3])
-        more = f" (+{len(mismatched) - 3} more)" if len(mismatched) > 3 else ""
-        warnings.append(
-            f"{len(mismatched)} child SKU(s) do not start with {row['sku']!r} — "
-            f"{shown}{more}. They will be written exactly as listed; check the "
-            f"parent SKU is right before committing.")
+    # This template states the pairing, so the prefix carries nothing. And the
+    # client's own convention no longer follows it — parent "CP-280-HP241R - M"
+    # against children "CP-280-HP241R-01" — so the check fired on every product
+    # in a clean workbook. A warning that is always on is one users learn to
+    # scroll past, taking the real ones with it.
+
+
+def _check_agreement(row: dict, variants: list[dict]) -> None:
+    """Product-level columns that two lines of one product disagree about."""
+    for field, label in SHARED_FIELDS.items():
+        # size_attr is only meaningful when the product has sizes, and _merge
+        # may already have overridden it; judge what the sheet said, not that.
+        if field == "size_attr" and not row["sizes"]:
+            continue
+        seen: dict[str, list[int]] = {}
+        for variant in variants:
+            value = variant[field]
+            text = {True: "Yes", False: "No"}.get(value, value)
+            seen.setdefault(str(text), []).append(variant["source_row"])
+        if len(seen) > 1:
+            shown = "; ".join(f"{value!r} on row(s) {rows}"
+                              for value, rows in seen.items())
+            row["errors"].append(
+                f"the lines for {row['sku'] or 'this SKU'} disagree about "
+                f"{label}: {shown}. Every line of a product must repeat the "
+                f"same values in that column.")
+
+
+def _check_grid(row: dict) -> None:
+    """Do the variant lines cover every colour x size exactly once?
+
+    The old template could only compare COUNTS — it had a colour list, a size
+    list and a pile of child SKUs, and no statement of which belonged to which,
+    so "8 children for 2 colours x 4 sizes" was the most it could check. This
+    one names the pairs, so the check is the real one: every combination the
+    product will generate has exactly one child SKU waiting for it.
+
+    That matters because the runner generates the grid in nopCommerce and then
+    looks each combination up. A pair with no child SKU fails mid-run with the
+    product already created; a pair with two is a contradiction the sheet has
+    to settle. Both are worth catching before the browser opens.
+    """
+    errors = row["errors"]
+
+    if not row["variants"]:
+        if row["generate_combinations"]:
+            errors.append("Generate Combinations is set but no child SKUs are listed")
+        return
+
+    if not row["colors"]:
+        errors.append("no colours are listed")
+        return
+
+    missing_colour = [v["source_row"] for v in row["variants"] if not v["color"]]
+    if missing_colour:
+        errors.append(f"row(s) {missing_colour} give a child SKU with no colour")
+
+    # A product either has sizes on every line or on none. Half and half leaves
+    # the sized lines describing a two-dimensional grid and the rest a
+    # one-dimensional one, and no reading covers both.
+    sized = [v for v in row["variants"] if v["size"]]
+    if sized and len(sized) != len(row["variants"]):
+        bare = [v["source_row"] for v in row["variants"] if not v["size"]]
+        errors.append(
+            f"row(s) {bare} leave the Size cell empty while the rest of this "
+            f"product sets one — a product has sizes on every line or on none")
+        return
+
+    seen: dict[tuple[str, str | None], list[str]] = {}
+    for variant in row["variants"]:
+        seen.setdefault((variant["color"], variant["size"]), []).append(variant["sku"])
+
+    for (colour, size), skus in seen.items():
+        if len(skus) > 1:
+            where = f"{colour} / {size}" if size else colour
+            errors.append(
+                f"{len(skus)} child SKUs for {where}: {skus}. One combination "
+                f"takes one child SKU.")
+
+    # Only when combinations are actually being generated. A product that is
+    # not generating a grid has no grid to fill, and blocking it over a gap in
+    # one it will never build would refuse a row the runner handles fine.
+    expected = [(c, s) for c in row["colors"] for s in (row["sizes"] or [None])]
+    absent = [pair for pair in expected if pair not in seen]
+    if absent and row["generate_combinations"]:
+        shown = ", ".join(f"{c} / {s}" if s else c for c, s in absent[:5])
+        more = f" (+{len(absent) - 5} more)" if len(absent) > 5 else ""
+        errors.append(
+            f"{len(absent)} of {len(expected)} combination(s) have no child SKU "
+            f"— {shown}{more}. Every colour x size this product generates needs "
+            f"a line.")
+
+    repeated = _repeated(row["combinations"])
+    if repeated:
+        errors.append(
+            f"child SKU(s) {repeated} are used for more than one combination — "
+            f"each combination takes its own")
 
 
 def parse_workbook(source: str | Path | Any, *, filename: str = "") -> ParseResult:
@@ -327,12 +559,19 @@ def parse_workbook(source: str | Path | Any, *, filename: str = "") -> ParseResu
         if unknown:
             log.warning("%s: unrecognised column(s) %s", sheet, unknown)
 
-        parsed_rows = []
+        variants = []
         for offset, values in enumerate(rows[1:], start=2):
-            parsed = _parse_row(values, mapping, sheet=sheet, row_number=offset,
-                                unknown_headers=unknown)
-            if parsed:
-                parsed_rows.append(parsed)
+            variant = _read_variant(values, mapping, sheet=sheet, row_number=offset)
+            if variant:
+                variants.append(variant)
+
+        legacy = _detect_legacy_layout(sheet, variants)
+        if legacy:
+            result.errors.append(legacy)
+            continue
+
+        parsed_rows = [_merge(group, unknown)
+                       for group in _group_by_sku(variants).values()]
 
         _check_attribute_columns(sheet, mapping, parsed_rows, result)
         result.rows.extend(parsed_rows)
@@ -342,12 +581,34 @@ def parse_workbook(source: str | Path | Any, *, filename: str = "") -> ParseResu
     duplicates = _duplicate_skus(result.rows)
     for row in result.rows:
         if row["sku"] in duplicates:
-            row["errors"].append(f"SKU {row['sku']!r} appears more than once")
+            row["errors"].append(
+                f"SKU {row['sku']!r} appears on more than one sheet — a product "
+                f"is one SKU, and its lines all belong on the same sheet")
 
-    log.info("parsed %s — %d row(s), %d valid, %d sheet error(s)",
-             result.source_file, len(result.rows), result.valid_rows,
+    log.info("parsed %s — %d product(s) from %d variant line(s), %d valid, "
+             "%d sheet error(s)", result.source_file, len(result.rows),
+             sum(len(r["source_rows"]) for r in result.rows), result.valid_rows,
              len(result.errors))
     return result
+
+
+def _group_by_sku(variants: list[dict]) -> dict[str, list[dict]]:
+    """SKU -> its variant lines, in first-seen order.
+
+    Grouped across the WHOLE sheet rather than over consecutive runs, so a
+    product whose lines are split up — sorted by colour, or one appended
+    later — still assembles. Nothing downstream depends on the order lines
+    appear in, only on which product they belong to.
+
+    A line with no SKU cannot belong to a product, so it gets a group of its
+    own and _validate fails it by name. Bundling them together would report one
+    error for what may be several unrelated mistakes.
+    """
+    groups: dict[str, list[dict]] = {}
+    for variant in variants:
+        key = variant["sku"] or f"\0blank-row-{variant['source_row']}"
+        groups.setdefault(key, []).append(variant)
+    return groups
 
 
 def _check_attribute_columns(sheet: str, mapping: dict[int, str],
@@ -365,8 +626,8 @@ def _check_attribute_columns(sheet: str, mapping: dict[int, str],
     search for is "Product Attributes Type"; "the size attribute column" names
     something that appears nowhere in their spreadsheet.
 
-    Only reported when the sheet actually uses sizes. A hard-hat sheet with
-    Sizes = NA has no size attribute to name and nothing to fix.
+    Only reported when the sheet actually uses sizes. A hard-hat sheet with an
+    empty Size column has no size attribute to name and nothing to fix.
     """
     if not any(row["sizes"] for row in rows):
         return
@@ -378,18 +639,22 @@ def _check_attribute_columns(sheet: str, mapping: dict[int, str],
             f"{example['sku']}) but has only ONE 'Product Attributes Type' "
             f"column. The template needs two: the first names the colour "
             f"attribute, the second names the size attribute. Add a second "
-            f"'Product Attributes Type' column immediately before the Sizes "
+            f"'Product Attributes Type' column immediately before the Size "
             f"column and put 'Size' in every row. Assuming 'Size' for now.")
-    elif any(row["warnings"] and SIZE_COLUMN_WRONG in row["warnings"]
-             for row in rows):
+    elif any(SIZE_COLUMN_WRONG in row["warnings"] for row in rows):
         wrong = sum(1 for row in rows if SIZE_COLUMN_WRONG in row["warnings"])
         result.sheet_warnings.append(
             f"{sheet}: the SECOND 'Product Attributes Type' column (the one "
-            f"just before Sizes) names the size attribute, but on {wrong} row(s) "
-            f"it repeats the colour attribute instead. Put 'Size' in that column "
-            f"on every row. Assuming 'Size' for now — left as it is, both "
-            f"attributes would share one name and every size would be added as "
-            f"a colour.")
+            f"just before Size) names the size attribute, but on {wrong} "
+            f"product(s) it repeats the colour attribute instead. Put 'Size' in "
+            f"that column on every row. Assuming 'Size' for now — left as it "
+            f"is, both attributes would share one name and every size would be "
+            f"added as a colour.")
+
+
+def _unique(values) -> list[str]:
+    """First-seen order, duplicates dropped."""
+    return list(dict.fromkeys(values))
 
 
 def _repeated(values: list[str]) -> list[str]:

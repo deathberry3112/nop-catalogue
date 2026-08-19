@@ -1,8 +1,16 @@
 """The three-tier colour resolution pipeline.
 
+    explicit   the sheet paired them itself                        — free, no tier
     map        an exact (scope, colour) hit in the curated table   — free, trusted
     heuristic  the shape rule in combination_skus.score            — free
     llm        OpenAI, over whatever is left                       — ~500ms, proposal
+
+The first line is where the current template lands and the other three are for
+workbooks written the old way. One line per variant means the sheet already
+says which child SKU belongs to which colour, so there is nothing to resolve —
+resolve() verifies the counts and returns. The tiers below it exist because the
+old template packed a product onto one line and left the pairing to be read out
+of the SKU text.
 
 Tiers are applied PER COLOUR, not per row. A row with eight known colours and
 one unknown makes one model call about one colour, with the eight consumed
@@ -28,6 +36,7 @@ log = logging.getLogger("colour.resolver")
 
 
 class Tier(str, Enum):
+    EXPLICIT = "explicit"       # the sheet said so; no tier ran
     MAP = "map"
     HEURISTIC = "heuristic"
     LLM = "llm"
@@ -120,6 +129,23 @@ def resolve(row: dict, *, allow_llm: bool = True) -> Resolution:
 
     if not colours:
         resolution.verified = True                      # nothing to resolve
+        return resolution
+
+    # THE CURRENT TEMPLATE ANSWERS THIS QUESTION ITSELF. One line per variant
+    # means the sheet states which child SKU belongs to which colour and size,
+    # so there is no code to recover and no tier to run — not the map, not the
+    # shape heuristic, and above all not the model. Colour codes only ever
+    # existed as a way to read a pairing the old template left implicit.
+    #
+    # Still verified below like every other answer: the counts have to come out
+    # right whether a tier proposed the mapping or the user typed it.
+    if combination_skus.explicit_map(row) is not None:
+        resolution.tiers = {colour: Tier.EXPLICIT for colour in colours}
+        try:
+            combination_skus.combination_map(row)
+            resolution.verified = True
+        except combination_skus.CombinationError as exc:
+            resolution.error = str(exc)
         return resolution
 
     # A single colour that no child SKU names is settled before any tier runs.

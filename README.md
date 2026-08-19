@@ -9,6 +9,38 @@ right child SKU on each combination.
                                  +-> run store            +-> report.xlsx
                                      (Postgres)               (re-uploadable)
 
+## The workbook
+
+**One line is one variant.** A line carries one colour, one size and the child
+SKU that pairs them; lines sharing a SKU are one product:
+
+| Product name | SKU | Color | Size | Child SKU Varient |
+|---|---|---|---|---|
+| G55FF - M | G55FF - M | Lime | S/M | G55FF08 |
+| G55FF - M | G55FF - M | Lime | L/XL | G55FF10 |
+| G55FF - M | G55FF - M | Orange | S/M | G55FF14 |
+| G55FF - M | G55FF - M | Orange | L/XL | G55FF16 |
+
+(the other seven columns — `Attribute Specification Value`, the two
+`Product Attributes Type`, `Color Swatch`, `Generate Combinations`,
+`Allow Out Of Stock`, `Save Product` — describe the *product*, so every line of
+one repeats them. Leave `Size` empty for a product that has no sizes.)
+
+**The SKU is what groups them, never the product name.** Two products may share
+a display name and still be two products, so lines are collected by SKU:
+four lines with four SKUs are four products, whatever the name column says.
+
+Because each line states which child SKU belongs to which colour and size,
+nothing has to be inferred — and the checks get sharper. The parser can now
+name the combination that has no child SKU, rather than only counting them.
+
+An earlier template packed a whole product onto one line, with colours
+comma-separated and every child SKU in a single cell. The columns are
+identical, so a workbook still written that way is **refused with a message
+saying so** rather than read as variants — the two layouts disagree about what
+a line means, and misreading one produces a wrong catalogue with a clean
+report.
+
 ## Running it
 
 ```bash
@@ -77,8 +109,14 @@ again — and the report it produces can be re-uploaded to finish the batch.
 
 ## Colour codes
 
+> **Not used by the current template.** One line per variant means the workbook
+> states which child SKU belongs to which colour, so no tier runs and no model
+> is called — resolution is a counts check. Everything below applies to
+> payloads written the old way, which is why the machinery is still here and
+> still tested.
+
 Child SKUs carry a short code per colour (`CP-V-200 LE 2XL` — `LE` is
-Hi-Viz Lime). The payload never says which code is which colour, so it is
+Hi-Viz Lime). The old payload never said which code was which colour, so it was
 resolved in three tiers:
 
 | Tier | Source | Cost |

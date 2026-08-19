@@ -14,6 +14,13 @@ Callers set a combination's SKU by reading what that combination actually *is*
 off the grid ("Color: Yellow, Size: L") and looking it up here. Nothing depends
 on ordering at any point.
 
+MOST OF THIS MODULE NO LONGER RUNS. The current template is one line per
+variant, so the workbook states the pairing and combination_map() reads it from
+`row["variants"]` — see explicit_map. Everything below that is for payloads
+written the old way, where a product was packed onto one line and the pairing
+had to be recovered from the SKU text; it is kept, and kept tested, because it
+is the only thing that can read those.
+
 WHY NOT JUST COMPUTE THE CODE FROM THE NAME
 There is a rule that fits most of the data — the initial of each word plus the
 last letter of the last word: Yellow->YW, White->WE, Grey->GY, Green->GN,
@@ -398,6 +405,37 @@ def colour_codes(row: dict) -> dict[str, str]:
     return resolved
 
 
+def explicit_map(row: dict) -> dict[tuple[str, str | None], str] | None:
+    """The pairing the sheet stated, or None if it did not state one.
+
+    The current template is one line per variant, so the parser can read which
+    child SKU belongs to ("Orange", "L/XL") straight off the row and hand it
+    over in `row["variants"]` — see app/parser._merge. Nothing in this module
+    has to recover it from the SKU text.
+
+    Subject to the same checks as an inferred mapping — two lines claiming one
+    combination, or a count that does not match colours x sizes, raise here
+    exactly as they would there. A stated pairing earns no more trust than a
+    derived one; it just costs nothing to obtain. Building the dict without
+    that check would collapse a duplicate silently, which is the one thing a
+    caller of this module is entitled to assume never happens.
+    """
+    variants = row.get("variants")
+    if not variants:
+        return None
+
+    mapping: dict[tuple[str, str | None], str] = {}
+    for variant in variants:
+        key = (variant.get("color") or "", variant.get("size") or None)
+        sku = variant.get("sku") or ""
+        if key in mapping:
+            raise CombinationError(
+                f"{row.get('sku')}: two combinations for {key}: "
+                f"{mapping[key]!r} and {sku!r}")
+        mapping[key] = sku
+    return mapping
+
+
 def combination_map(row: dict, codes: dict[str, str] | None = None
                     ) -> dict[tuple[str, str | None], str]:
     """{(colour, size): combination SKU} for every combination in the row.
@@ -406,12 +444,20 @@ def combination_map(row: dict, codes: dict[str, str] | None = None
     be accounted for — a leftover means the colour mapping is wrong, and it is
     better to hear that here than to write a wrong SKU into the catalogue.
 
+    A row carrying `variants` (the current one-line-per-variant template) has
+    already said which SKU goes where, so nothing is inferred and `codes` is
+    ignored. The counts are still checked below.
+
     `codes` lets a caller supply a colour->code mapping from somewhere other
     than the built-in heuristic (app.colour resolves it from a curated map and,
     failing that, a model). The checks below are unchanged and still apply — an
     injected mapping earns no more trust than a derived one, which is precisely
     what makes it safe to let a model propose one.
     """
+    stated = explicit_map(row)
+    if stated is not None:
+        return _check_counts(row, stated)
+
     codes = colour_codes(row) if codes is None else codes
     by_code = {code: colour for colour, code in codes.items()}
     sizes = row.get("sizes") or []
@@ -437,10 +483,19 @@ def combination_map(row: dict, codes: dict[str, str] | None = None
                 f"{mapping[key]!r} and {combination!r}")
         mapping[key] = combination
 
-    expected = len(row.get("colors") or []) * max(1, len(sizes))
+    return _check_counts(row, mapping)
+
+
+def _check_counts(row: dict, mapping: dict[tuple[str, str | None], str]
+                  ) -> dict[tuple[str, str | None], str]:
+    """The gate every mapping answers to, however it was arrived at: one
+    combination for each colour x size the product will generate."""
+    colours = row.get("colors") or []
+    sizes = row.get("sizes") or []
+    expected = len(colours) * max(1, len(sizes))
     if len(mapping) != expected:
         raise CombinationError(
-            f"{row['sku']}: {len(mapping)} combination(s) for "
-            f"{len(row.get('colors') or [])} colour(s) x {max(1, len(sizes))} size(s) "
+            f"{row.get('sku')}: {len(mapping)} combination(s) for "
+            f"{len(colours)} colour(s) x {max(1, len(sizes))} size(s) "
             f"— expected {expected}")
     return mapping
