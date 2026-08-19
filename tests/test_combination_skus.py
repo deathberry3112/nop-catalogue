@@ -191,6 +191,111 @@ def test_a_lone_size_left_off_the_child_sku_is_inferred_not_refused():
     assert cs.combination_map(row) == {("Lime", "S"): "X LE"}
 
 
+# --- sizes the child SKUs abbreviate ----------------------------------------
+# Only where the row has already spelled at least one size out in full. A
+# trailing token is not self-evidently a size, so prefix matching one that
+# nothing has established as a size is how a colour code becomes a size.
+
+def test_an_abbreviated_size_resolves_when_the_row_spells_others_out():
+    """The real CP-SV4GM row: M/L/XL are written in full, 2XL/3XL are cut to
+    2X/3X, all in the same Child SKUs cell."""
+    row = {"sku": "CP-SV4GM", "colors": ["Lime"],
+           "sizes": ["M", "L", "XL", "2XL", "3XL"],
+           "combinations": ["CP-SV4GMM", "CP-SV4GML", "CP-SV4GMXL",
+                            "CP-SV4GM2X", "CP-SV4GM3X"]}
+    assert cs.size_aliases(row) == {"2x": "2XL", "3x": "3XL"}
+
+
+def test_the_digit_is_what_separates_2x_from_3x():
+    """_letters(), which the colour tiers score with, strips non-alphabetic
+    characters — it reduces 2X and 3X to 'x' and 2XL and 3XL to 'xl'. Reusing
+    it here would tie on every pair; the raw prefix test must not."""
+    assert cs._letters("2X") == cs._letters("3X")        # the trap
+    row = {"sku": "X", "colors": ["Lime"], "sizes": ["M", "2XL", "3XL"],
+           "combinations": ["X M", "X 2X", "X 3X"]}
+    assert cs.size_aliases(row) == {"2x": "2XL", "3x": "3XL"}
+
+
+def test_a_row_that_spells_no_size_out_is_refused():
+    """Nothing establishes that the trailing token is a size at all, so these
+    could equally be colour codes. Refusing is the honest answer."""
+    row = {"sku": "X", "colors": ["Lime"], "sizes": ["2XL", "3XL"],
+           "combinations": ["X 2X", "X 3X"]}
+    assert cs.size_aliases(row) == {}
+    with pytest.raises(cs.CombinationError, match="does not end in one of"):
+        cs.combination_map(row)
+
+
+def test_a_colour_code_is_never_aliased_onto_a_size():
+    """'S' is a prefix of 'Small', but S here is Smoke Lens. No size is spelled
+    out, so nothing may be aliased."""
+    row = {"sku": "X", "colors": ["Smoke Lens", "Clear Lens"],
+           "sizes": ["Small", "Medium"], "combinations": ["X S", "X C"]}
+    assert cs.size_aliases(row) == {}
+
+
+def test_an_ambiguous_abbreviation_is_refused():
+    """'X' prefixes both XL and XS. A tie is not an answer."""
+    row = {"sku": "Y", "colors": ["Lime"], "sizes": ["M", "XL", "XS"],
+           "combinations": ["Y M", "Y X"]}
+    assert cs.size_aliases(row) == {}
+
+
+def test_two_tokens_competing_for_one_size_cancel():
+    """Both '2' and '2X' prefix 2XL and nothing else. Assigning either would be
+    decided by iteration order, which nothing in this module may depend on."""
+    row = {"sku": "Y", "colors": ["Lime"], "sizes": ["M", "2XL"],
+           "combinations": ["Y M", "Y 2", "Y 2X"]}
+    assert cs.size_aliases(row) == {}
+
+
+# --- a single colour the child SKUs do not bother writing --------------------
+# The mirror of implied_size, and refused for the same reasons where it cannot
+# be derived: two or more colours, or a row that writes it on some children.
+
+def test_the_grainger_row_resolves_end_to_end():
+    """Fault 1 and fault 2 on one row: no colour code anywhere, and two sizes
+    abbreviated. Every child SKU is parent + size, run together."""
+    row = {"sku": "CP-SV4GM", "colors": ["Lime"],
+           "sizes": ["M", "L", "XL", "2XL", "3XL"],
+           "combinations": ["CP-SV4GMM", "CP-SV4GML", "CP-SV4GMXL",
+                            "CP-SV4GM2X", "CP-SV4GM3X"]}
+    assert cs.implied_colour(row) == "Lime"
+    assert cs.colour_codes(row) == {"Lime": ""}
+    assert cs.combination_map(row) == {
+        ("Lime", "M"): "CP-SV4GMM", ("Lime", "L"): "CP-SV4GML",
+        ("Lime", "XL"): "CP-SV4GMXL", ("Lime", "2XL"): "CP-SV4GM2X",
+        ("Lime", "3XL"): "CP-SV4GM3X"}
+
+
+def test_a_written_colour_code_is_not_implied():
+    """The existing single-colour shape must be untouched: 'X LE' has a code,
+    and the SIZE is what is implied there."""
+    row = {"sku": "X", "colors": ["Lime"], "sizes": ["S"], "combinations": ["X LE"]}
+    assert cs.implied_colour(row) is None
+    assert cs.combination_map(row) == {("Lime", "S"): "X LE"}
+
+
+def test_two_colours_without_a_code_stay_unknowable():
+    """The codes are the only thing telling two colours apart, so a row that
+    omits them cannot be derived — only guessed at."""
+    row = {"sku": "X", "colors": ["Lime", "Orange"], "sizes": ["M", "L"],
+           "combinations": ["X M", "X L"]}
+    assert cs.implied_colour(row) is None
+    with pytest.raises(cs.CombinationError, match="has a size but no colour code"):
+        cs.combination_map(row)
+
+
+def test_a_half_written_colour_code_is_ambiguous_and_fails():
+    """One child names its colour and one does not. Is the bare one a missing
+    code, or a code that happens to look like a size?"""
+    row = {"sku": "X", "colors": ["Lime"], "sizes": ["M", "L"],
+           "combinations": ["X LE M", "X L"]}
+    assert cs.implied_colour(row) is None
+    with pytest.raises(cs.CombinationError):
+        cs.combination_map(row)
+
+
 def test_a_tie_is_refused(monkeypatch):
     """Two colours that no signal can separate must fail, not coin-flip."""
     row = {"sku": "X", "colors": ["Ab", "Ab"], "sizes": [],
