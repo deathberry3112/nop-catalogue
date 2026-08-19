@@ -24,7 +24,12 @@
   <nav class="tabs">
     <button class="tab is-active" data-view="upload">Upload</button>
     <button class="tab" data-view="runs">Runs <span class="badge" id="runs-badge" hidden></span></button>
-    <button class="tab" data-view="colours">Colour map <span class="badge warn" id="colour-badge" hidden></span></button>
+    <!-- Legacy. Colour codes are only resolved for workbooks written to the old
+         one-row-per-product template, which the parser no longer accepts — so
+         nothing a user can upload reaches this map. Hidden rather than deleted:
+         the entries are still the tier-1 source if those payloads are ever run
+         again through the API. Reachable at #colours. -->
+    <button class="tab" data-view="colours" id="tab-colours" hidden>Colour map</button>
   </nav>
   <!-- A segmented control, not a cycling button: three states are worth showing
        all at once, and "follow system" stops being a hidden third click. -->
@@ -250,13 +255,20 @@
 
   <!-- ─── COLOURS ────────────────────────────────────────────────────── -->
   <section class="view" id="view-colours">
-    <h2 class="section-title">Colour map</h2>
+    <h2 class="section-title">Colour map <span class="pill">legacy</span></h2>
+    <div class="alert warn">
+      <strong>Nothing uploaded here uses this any more.</strong> Colour codes only
+      have to be worked out for workbooks written to the old one-row-per-product
+      template, and those are no longer accepted — a current workbook states which
+      child SKU belongs to which colour and size on every line, so no tier runs and
+      no proposal is ever recorded. Confirming an entry below changes nothing about
+      a run started from an upload. The map is kept because it is still the tier-1
+      source if an old-shape payload is ever posted straight to the run API.
+    </div>
     <p class="hint">
       Which short code each colour uses in its child SKUs. Scoped per product family,
       because the same colour does not always carry the same code —
       <code>Hi-Vis Lime</code> is <code>HLE</code> on hard hats but <code>LE</code> on vests.
-      Entries proposed by the heuristic or the model are used, but stay
-      <em>unconfirmed</em> until someone here says they are right.
     </p>
 
     <div class="colour-add">

@@ -56,6 +56,15 @@ function show(view) {
 }
 $$('.tab').forEach((t) => t.addEventListener('click', () => show(t.dataset.view)));
 
+/* The colour map is legacy — see the note in its section and the comment on its
+   tab. It stays reachable at #colours for the case it still serves (an old-shape
+   payload posted straight to /api/runs, where tier 1 does read the map), without
+   putting a tab in front of everyone else that leads nowhere. */
+if (location.hash === '#colours') {
+  $('#tab-colours').hidden = false;
+  show('colours');
+}
+
 /* ── theme ───────────────────────────────────────────────────────────── */
 /* Three states, not two: "system" has to stay reachable, because following the
    OS is the sensible default and a binary switch has no way back to it. The
@@ -1022,9 +1031,10 @@ async function loadColours() {
   let data;
   try { data = await api('/api/colours'); } catch { return; }
 
-  $('#colour-badge').hidden = data.pending === 0;
-  $('#colour-badge').textContent = data.pending;
-
+  // No pending badge. Unconfirmed entries used to be work worth doing — a
+  // confirmation saved the next run a model call. Nothing reads the map back
+  // now, so counting them on the tab was a permanent nag for a job with no
+  // payoff. The rows still show their status for anyone who opens the view.
   $('#c-table tbody').innerHTML = data.entries.map((e) => `
     <tr>
       <td>${esc(e.scope)}</td>
@@ -1081,5 +1091,4 @@ $('#c-add').addEventListener('click', () => {
 restoreCreds();
 loadHealth();
 refreshRunList();
-loadColours();
 setInterval(() => { if (!state.runId) refreshRunList(); }, 5000);

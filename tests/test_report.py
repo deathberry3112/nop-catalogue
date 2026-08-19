@@ -101,10 +101,17 @@ def test_the_payload_columns_survive_the_round_trip(payload, tmp_path):
     assert headers[-2:] == ["Status", "Note"]
     assert len(headers) == len(xlsxCreator.TEMPLATE_HEADERS) + 2
 
-    body = {r[1]: r for r in ws.iter_rows(min_row=2, values_only=True)}
+    # One line per variant, which is what the parser reads back. This payload
+    # predates the template change and states no pairing, so the child SKUs are
+    # recovered by combination_skus on the way out — see row_to_lines.
     row = next(r for r in payload if r["sku"] == "CP-V-200")
-    cells = body["CP-V-200"]
-    assert cells[headers.index("Product name")] == row["product_name"]
-    assert cells[headers.index("Color")] == ", ".join(row["colors"])
-    assert cells[headers.index("Sizes")] == ",".join(row["sizes"])
-    assert cells[headers.index("Child SKU Varient")] == "\n".join(row["combinations"])
+    lines = [r for r in ws.iter_rows(min_row=2, values_only=True)
+             if r[headers.index("SKU")] == "CP-V-200"]
+    assert len(lines) == len(row["colors"]) * len(row["sizes"])
+
+    assert {line[headers.index("Product name")] for line in lines} == \
+           {row["product_name"]}
+    assert {line[headers.index("Color")] for line in lines} == set(row["colors"])
+    assert {line[headers.index("Size")] for line in lines} == set(row["sizes"])
+    assert {line[headers.index("Child SKU Varient")] for line in lines} == \
+           set(row["combinations"])
