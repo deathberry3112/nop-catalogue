@@ -236,11 +236,25 @@
         <div id="r-failure-groups"></div>
       </div>
 
+      <!-- A swatch never fails a product, so nothing above this point can
+           mention one. That is exactly why it needs saying somewhere: a colour
+           left without a swatch is a run that reports itself as clean and a
+           storefront with a blank square on it. -->
+      <div id="r-swatches" hidden>
+        <h3 class="section-title sm">Colours that did not get a swatch</h3>
+        <p class="hint">A swatch is the colour square a shopper picks on the store.
+          None of this failed a product — these are the colours worth a look, grouped
+          by what stopped them. Every colour that did get one is listed under its own
+          product further down.</p>
+        <div id="r-swatch-groups"></div>
+      </div>
+
       <h3 class="section-title sm">Products</h3>
       <div class="table-wrap">
         <table class="grid" id="r-table">
           <thead>
-            <tr><th>SKU</th><th>Status</th><th>Colour tiers</th><th>Steps</th><th>Detail</th></tr>
+            <tr><th>SKU</th><th>Status</th><th>Colour tiers</th><th>Swatches</th>
+              <th>Steps</th><th>Detail</th></tr>
           </thead>
           <tbody></tbody>
         </table>
