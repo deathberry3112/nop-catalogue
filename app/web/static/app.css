@@ -429,6 +429,38 @@ main { max-width:1180px; margin:0 auto; padding:1.75rem 1.5rem 5rem; }
 .astep.note.error .m { color:var(--bad); }
 .alog .fmsg { margin:.2rem 0 .3rem 1.3rem; }
 
+/* Which colour got which swatch, under the step that did it. A four-column
+   grid rather than four columns per row, so colour/state/swatch line up down
+   the block however long the names are — `display:contents` lets each entry
+   stay one element in the markup and still lay out as four cells. */
+.swatches {
+  display:grid; grid-template-columns:max-content max-content max-content 1fr;
+  gap:.1rem .8rem; margin:.15rem 0 .35rem 1.3rem;
+  font-size:12px; line-height:1.5;
+}
+.sw { display:contents; }
+.sw .c  { color:var(--ink); }
+.sw .c .asked { color:var(--faint); font-size:11px; }
+.sw .st { color:var(--muted); }
+.sw .st.ok   { color:var(--ok); }
+.sw .st.warn { color:var(--warn); }
+.sw .v  { color:var(--muted); font-size:11px;
+          font-family:ui-monospace, Menlo, Consolas, monospace; }
+.sw .n  { color:var(--faint); min-width:0; }
+/* A resolved colour's note is background; a skipped one's note is the whole
+   point, so only the first is allowed to be cut short. */
+.sw.set .n, .sw.kept .n { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sw.skipped .c, .sw.missed .c { color:var(--warn); }
+
+/* The counts on the step's own line, so the block underneath is optional. */
+.swc { margin-left:.5rem; color:var(--faint); font-size:11px; }
+.swc.warn { color:var(--warn); }
+
+/* The run-level roll-up reuses .fgroup wholesale. `info` is the one that needs
+   no action — same shape, none of the alarm. */
+.fgroup.info summary { color:var(--muted); }
+.fbody .swname { margin-left:.5rem; color:var(--muted); font-size:12px; }
+
 /* ─── colour map ──────────────────────────────────────────────────────── */
 /* the inputs here share the .field treatment above — one look for every field */
 .colour-add { display:flex; gap:.5rem; margin-bottom:1rem; flex-wrap:wrap; }

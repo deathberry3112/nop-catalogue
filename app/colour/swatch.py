@@ -1,7 +1,9 @@
 """Which colour swatch the workbook asked for.
 
-    swatches, problems = swatches_for_row(row, options)
+    swatches, problems, outcomes = swatches_for_row(row, options)
     swatches            -> {"Yellow": "25", "Hi-Vis Lime": "2071"}
+    outcomes            -> one entry per colour the sheet asked about, for the
+                           console: what it got, or why it got nothing
 
 THE SHEET DECIDES, and that is the first thing to know about this module. The
 template carries a "Color Swatch" column beside "Color"; app.parser splits it
@@ -31,12 +33,21 @@ sheet writes against them fails in both directions at once:
                                 hat uses "DSHigh-Vis Green" (id 2071)
     Pink, Grey                  exactly one swatch each, and those are safe
 
-The last line is the only case a name can settle by itself, and it is tier 2
-below. Everything else is a business fact — the client decided that Hi-Vis Lime
-is filed under a swatch named Green — so it comes from the map or the colour
-keeps no swatch at all. A near-miss picked by string similarity would be a plausible
-swatch on the wrong product, silently, which is the outcome this codebase is
-built to rule out (see app/colour/store.py and combination_skus).
+Tier 2 settles both of the first two lines by the name alone: a swatch whose
+label IS the colour is the answer, and when several carry that same label the
+first one the dropdown offers wins. Duplicates are the same swatch entered
+twice as far as the page is concerned, so refusing to choose between them
+bought nothing but an unset swatch. What tier 2 will not do is match on
+anything short of the whole name — a near-miss picked by string similarity
+would be a plausible swatch on the wrong product, silently, which is the
+outcome this codebase is built to rule out (see app/colour/store.py and
+combination_skus).
+
+The third line is the case a name cannot settle at all: the client decided
+that Hi-Vis Lime is filed under a swatch named Green, and a business fact like
+that comes from the map or the colour keeps no swatch. The map also outranks
+tier 2 wherever the first duplicate is the wrong one — that is what the
+`global` block below is measured for.
 
 WHAT TIER 2 CANNOT SEE, and it is worth knowing before trusting it: the same
 colour name legitimately takes a different swatch on a different product
@@ -70,7 +81,7 @@ LOCAL_PATH = ROOT / "var" / "colour-swatches.json"
 
 class Tier(str, Enum):
     MAP = "map"                 # the curated table said so
-    LABEL = "label"             # exactly one swatch carries this name
+    LABEL = "label"             # a swatch carries this name (the first, if several)
     UNRESOLVED = "unresolved"   # nothing confident — leave the swatch unset
 
 
@@ -85,8 +96,9 @@ class Tier(str, Enum):
 #: MEASURED, NOT CHOSEN. Every entry below is what the client's own
 #: hand-configured products actually use, counted across the 204 attribute
 #: mappings on zinggreenproductsdev that have a swatch set. The `global` block
-#: settles the duplicate-label problem — where two swatches share a name, the
-#: catalogue is emphatic about which one is real:
+#: is what keeps the duplicate labels honest — resolve_swatches would otherwise
+#: take whichever of the two the dropdown lists first, and the catalogue is
+#: emphatic about which one is real:
 #:
 #:     lime    23 x113   37 never        orange  24 x139   38 x2
 #:     blue    19 x29    33 never        yellow  25 x40    39 never
@@ -129,17 +141,37 @@ class Swatch:
 
 @dataclass(frozen=True)
 class Choice:
-    """What one colour resolved to, and why."""
+    """What one colour resolved to, and why.
+
+    `reason` is prose for a human reading one product. `cause` is the same
+    thing as a slug, because the console groups a 200-row run by it and prose
+    does not group — see CAUSE below for the vocabulary. `alternatives` carries
+    the ids this choice beat when several swatches share the label, which is
+    the one case a resolved colour is still worth showing somebody.
+    """
 
     colour: str
     tier: Tier
     swatch_id: str | None = None
     swatch_label: str | None = None
     reason: str = ""
+    cause: str = ""
+    alternatives: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
         return self.swatch_id is not None
+
+
+#: Why a colour ended up where it did. The console groups on these, so they are
+#: part of the interface: renaming one silently re-labels a group in the UI.
+CAUSE = {
+    "duplicate":      "took the first of several identically-named swatches",
+    "unnamed":        "no swatch carries this name",
+    "map_missing_id": "the swatch map points at an id this admin does not offer",
+    "map_stale":      "the swatch map is stale — that id means something else here",
+    "unpaired":       "the sheet's swatch column could not be paired with the colours",
+}
 
 
 class SwatchMap:
@@ -250,28 +282,60 @@ def resolve_swatches(colours: list[str], options: list[tuple[str, str]], *,
             continue
 
         hits = grouped.get(normalise(colour), [])
-        if len(hits) == 1:
+        if hits:
             swatch_id, label = hits[0]
-            out[colour] = Choice(colour, Tier.LABEL, swatch_id, label,
-                                 f"the only swatch called {label!r}")
-        elif len(hits) > 1:
-            out[colour] = Choice(
-                colour, Tier.UNRESOLVED,
-                reason=f"{len(hits)} swatches are called {colour!r} "
-                       f"(ids {', '.join(i for i, _ in hits)}) and nothing on the "
-                       f"page tells them apart — add the right one to the swatch map")
+            others = tuple(i for i, _ in hits[1:])
+            reason = (
+                f"the only swatch named {label!r} in this store" if len(hits) == 1
+                else f"{len(hits)} swatches are named {label!r} and nothing tells "
+                     f"them apart, so this run used the first "
+                     f"(ids {', '.join(i for i, _ in hits)}) — save the colour to "
+                     f"your swatch list if you meant the other one")
+            out[colour] = Choice(colour, Tier.LABEL, swatch_id, label, reason,
+                                 cause="duplicate" if others else "",
+                                 alternatives=others)
         else:
             out[colour] = Choice(
-                colour, Tier.UNRESOLVED,
-                reason=f"no swatch is called {colour!r} — add it to the swatch map "
-                       f"(the client's own hard hats file 'Hi-Vis Lime' under "
-                       f"'DSHigh-Vis Green', so the name is not a reliable guide)")
+                colour, Tier.UNRESOLVED, cause="unnamed",
+                reason=f"no swatch in this store is named {colour!r} — save which "
+                       f"one it should use")
     return out
 
 
+def _outcome(colour: str, asked: str, choice: Choice | None, *,
+             cause: str = "", note: str = "") -> dict:
+    """One colour's story, as JSON the console can render.
+
+    A dict rather than a dataclass on purpose: this goes straight into
+    row_steps.detail and comes back out of Postgres, so its shape IS the wire
+    format. `state` is filled in later by the runner, which is the only layer
+    that knows what the admin accepted; until then it says what was intended.
+    """
+    if choice is None:
+        return {"colour": colour, "asked": asked, "swatch_id": None,
+                "swatch_label": None, "tier": Tier.UNRESOLVED.value,
+                "cause": cause, "alternatives": [], "note": note,
+                "state": "skipped"}
+    return {"colour": colour, "asked": asked, "swatch_id": choice.swatch_id,
+            "swatch_label": choice.swatch_label, "tier": choice.tier.value,
+            "cause": choice.cause, "alternatives": list(choice.alternatives),
+            "note": choice.reason,
+            "state": "planned" if choice.ok else "skipped"}
+
+
 def swatches_for_row(row: dict, options: list[tuple[str, str]]
-                     ) -> tuple[dict[str, str], list[str]]:
-    """({colour: swatch id}, [reasons]) for one payload row.
+                     ) -> tuple[dict[str, str], list[str], list[dict]]:
+    """({colour: swatch id}, [reasons], [outcome]) for one payload row.
+
+    The third element is the whole story rather than only the bad half: one
+    entry per colour the sheet asked a swatch for, resolved or not, in the
+    sheet's own order. It exists because "which swatches were done" is a
+    question the console could not answer from the first two — a run that set
+    nothing and a run that set everything both reported silence.
+
+    Colours the sheet did NOT ask about are absent from it, deliberately. A
+    blank cell is a decision, and a UI that printed a line per unasked colour
+    would bury the four that need a person under four hundred that do not.
 
     THE WORKBOOK DECIDES. The sheet carries a "Color Swatch" column beside
     "Color", and app.parser already splits it into row["swatches"]. That column
@@ -302,7 +366,7 @@ def swatches_for_row(row: dict, options: list[tuple[str, str]]
     colours = list(row.get("colors") or [])
     wanted = [w for w in (row.get("swatches") or [])]
     if not colours or not any(w.strip() for w in wanted):
-        return {}, []
+        return {}, [], []
 
     mismatch = len(wanted) != len(colours)
     if mismatch:
@@ -316,33 +380,43 @@ def swatches_for_row(row: dict, options: list[tuple[str, str]]
 
     resolved: dict[str, str] = {}
     problems: list[str] = []
+    outcomes: list[dict] = []
     for colour, name in pairs:
         if not name or not name.strip():
             if mismatch:
-                problems.append(
-                    f"{colour} — the sheet lists {len(wanted)} swatch(es) for "
-                    f"{len(colours)} colour(s), so they cannot be paired by "
-                    f"position, and no swatch entry is called {colour!r}")
+                why = (f"the sheet lists {len(wanted)} swatch(es) for "
+                       f"{len(colours)} colour(s), so they cannot be matched up "
+                       f"in order, and none of them is named {colour!r}")
+                problems.append(f"{colour} — {why}")
+                outcomes.append(_outcome(colour, "", None, cause="unpaired",
+                                         note=why))
             continue
         choice = choices[name]
+        outcomes.append(_outcome(colour, name, choice))
         if choice.ok:
             resolved[colour] = choice.swatch_id
         else:
             problems.append(f"{colour} (sheet says {name!r}) — {choice.reason}")
-    return resolved, problems
+    return resolved, problems, outcomes
 
 
 def _verify(colour: str, entry: Swatch, known: dict[str, str]) -> Choice:
     """A map entry is a claim about this admin; check it before acting on it."""
     label = known.get(entry.swatch_id)
     if label is None:
-        return Choice(colour, Tier.UNRESOLVED,
-                      reason=f"the swatch map points {colour!r} at id "
-                             f"{entry.swatch_id}, which this admin does not offer")
+        return Choice(colour, Tier.UNRESOLVED, cause="map_missing_id",
+                      reason=f"your swatch list sends {colour!r} to swatch "
+                             f"{entry.swatch_id}, which this store does not offer")
     if entry.swatch_label and normalise(label) != normalise(entry.swatch_label):
-        return Choice(colour, Tier.UNRESOLVED,
-                      reason=f"the swatch map points {colour!r} at id "
-                             f"{entry.swatch_id} expecting {entry.swatch_label!r}, "
-                             f"but that id is {label!r} here — the map is stale")
+        return Choice(colour, Tier.UNRESOLVED, cause="map_stale",
+                      reason=f"your swatch list sends {colour!r} to swatch "
+                             f"{entry.swatch_id} as {entry.swatch_label!r}, but in "
+                             f"this store swatch {entry.swatch_id} is {label!r} — "
+                             f"the saved entry is out of date")
+    # Named for the person reading a run, not for the person who wrote the map:
+    # "global" is the scope's internal name and means nothing to a reader, so
+    # the note says what the scope DOES instead of what it is called.
+    where = ("saved for every product" if entry.scope == GLOBAL
+             else f"saved for {entry.scope} products only")
     return Choice(colour, Tier.MAP, entry.swatch_id, label,
-                  f"swatch map ({entry.scope})")
+                  f"your swatch list — {where}")

@@ -65,7 +65,8 @@ class _NullStore:
 
 
 def _retrying(store, row_id: str | None, name: str,
-              action: Callable[[], Any]) -> Any:
+              action: Callable[[], Any], *, detail: dict | None = None,
+              detail_from: Callable[[Any], dict] | None = None) -> Any:
     """Run one step, retrying only what is worth retrying.
 
     The taxonomy decides. A transient DOM error — Kendo rebinding the grid
@@ -73,12 +74,23 @@ def _retrying(store, row_id: str | None, name: str,
     times. An unresolvable colour is not retried at all: five attempts spend
     five minutes arriving at the identical answer. That distinction is the
     entire reason app.errors exists.
+
+    `detail` is recorded on the step BEFORE the action runs and `detail_from`
+    turns its return value into more of the same, which is what row_steps.detail
+    has always been for. The order matters: a step that dies still carries what
+    it set out to do, so a half-configured product explains itself instead of
+    going quiet at the moment it becomes interesting.
     """
     attempt = 1
     while True:
         try:
-            with store.step(row_id, name, attempt=attempt) as detail:
-                return action()
+            with store.step(row_id, name, attempt=attempt) as recorded:
+                if detail:
+                    recorded.update(detail)
+                result = action()
+                if detail_from:
+                    _record(recorded, detail_from, result, name)
+                return result
         except Exception as exc:
             classified = classify(exc)
             if not classified.retryable or attempt >= classified.max_attempts:
@@ -91,6 +103,21 @@ def _retrying(store, row_id: str | None, name: str,
                         data={"attempt": attempt, "error": str(exc)[:500]})
             time.sleep(0.5 * attempt)
             attempt += 1
+
+
+def _record(recorded: dict, detail_from: Callable[[Any], dict], result: Any,
+            name: str) -> None:
+    """Fold the result into the step's detail, never at the step's expense.
+
+    Reporting is downstream of the work. A step that did its job in the admin
+    has succeeded whatever this function makes of the return value, so a bug in
+    here is a log line, not a failed product and not a retry of an action that
+    already ran.
+    """
+    try:
+        recorded.update(detail_from(result))
+    except Exception as exc:                # pragma: no cover - defensive
+        log.warning("could not record the detail of step %s: %s", name, exc)
 
 
 def mismatch_message(report: dict, row: dict) -> str:
@@ -158,11 +185,14 @@ def mismatch_message(report: dict, row: dict) -> str:
     return "combinations do not line up — " + ". Also, ".join(parts)
 
 
-def _resolve_swatches(product, colour_id: str, row: dict) -> tuple[dict, list[str]]:
-    """({colour: swatch id}, ["Colour — why not"]) for this row's colours.
+def _resolve_swatches(product, colour_id: str, row: dict
+                      ) -> tuple[dict, list[str], dict]:
+    """({colour: swatch id}, ["Colour — why not"], what to record about it).
 
     Driven by the sheet's Color Swatch column; see app.colour.swatch. A row that
-    leaves that column blank gets no swatches and says nothing about it.
+    leaves that column blank gets no swatches and says nothing about it — the
+    third element comes back empty, and the console prints nothing rather than
+    a line saying nothing happened.
 
     Never raises, and that is the policy this encodes: a swatch is decoration on
     a product that is otherwise correct, so failing to find one must not fail the
@@ -170,11 +200,69 @@ def _resolve_swatches(product, colour_id: str, row: dict) -> tuple[dict, list[st
     reports it rather than leaving somebody to notice blanks on the storefront.
     """
     if not row.get("swatches"):
-        return {}, []
+        return {}, [], {}
     options = product.swatch_options(colour_id)
     if not options:
-        return {}, []
-    return swatches_for_row(row, options)
+        # The sheet asked and this admin has no swatch field at all — stock
+        # nopCommerce. Silence here reads as "no swatches were wanted", which
+        # is the opposite of what happened, so the step says so once.
+        return {}, [], {"swatches": [], "unavailable": True}
+    swatches, problems, outcomes = swatches_for_row(row, options)
+    return swatches, problems, ({"swatches": outcomes} if outcomes else {})
+
+
+#: How a colour's swatch ended, once the admin has had its say. The first three
+#: are what the value editor reports back; "planned" survives only on a step
+#: that died before it could say, and "skipped" is decided before it ever runs.
+SWATCH_STATES = ("set", "kept", "missed", "skipped", "planned")
+
+
+def _swatch_states(seed: dict, report: dict) -> dict:
+    """Fold what the admin accepted back into what the sheet asked for.
+
+    `report` is ProductPage.add_attribute_values' return: which values it set a
+    swatch on and which already carried one. That distinction is the reason this
+    exists — a colour we set and a colour a human set look identical on the
+    storefront and mean opposite things about who chose it, and until now both
+    were reported the same way, which is to say not at all.
+    """
+    entries = seed.get("swatches") or []
+    if not entries:
+        return {}
+    report = report or {}
+    was_set = {str(k): str(v) for k, v in (report.get("set") or {}).items()}
+    kept = {str(k): str(v) for k, v in (report.get("kept") or {}).items()}
+
+    out, counts = [], {}
+    for entry in entries:
+        entry = dict(entry)
+        colour = entry.get("colour")
+        if colour in was_set:
+            entry["state"] = "set"
+        elif colour in kept:
+            # What is on the value now, which is not always what we resolved:
+            # an existing swatch is never overwritten, so say which one won.
+            current = kept[colour]
+            if current != (entry.get("swatch_id") or ""):
+                entry["swatch_label"] = None
+                entry["note"] = (f"this colour already had swatch {current} "
+                                 f"on it, so this run left it as it was")
+            entry["swatch_id"] = current
+            entry["state"] = "kept"
+        elif entry.get("swatch_id"):
+            # Resolved, and the editor reports neither setting nor keeping it.
+            entry["state"] = "missed"
+            entry["note"] = (f"this colour should have got swatch "
+                             f"{entry['swatch_id']}, but the admin never confirmed "
+                             f"it — worth checking on the product")
+        else:
+            entry["state"] = "skipped"
+        counts[entry["state"]] = counts.get(entry["state"], 0) + 1
+        out.append(entry)
+    # Counted in SWATCH_STATES order, not first-seen order: this lands in the
+    # database and gets read back next to yesterday's run.
+    return {"swatches": out,
+            "counts": {k: counts[k] for k in SWATCH_STATES if k in counts}}
 
 
 def _configure_attributes(page, products, product, row, store, row_id) -> dict:
@@ -197,15 +285,19 @@ def _configure_attributes(page, products, product, row, store, row_id) -> dict:
     # A colour that cannot be resolved confidently is reported and left unset —
     # never guessed. A missing swatch is cosmetic; the wrong one is a lie about
     # the product, and it would be invisible until a customer saw it.
-    swatches, unresolved = _resolve_swatches(product, colour_id, row)
+    swatches, unresolved, detail = _resolve_swatches(product, colour_id, row)
     if unresolved:
         log.warning("%s: no swatch for %s", row["sku"], "; ".join(unresolved))
-        store.event("colours left without a swatch", level="warn", row_id=row_id,
-                    data={"unresolved": unresolved})
 
+    # Recorded on the step that does the work rather than as its own event:
+    # this is what happened to each colour, so it belongs beside the action it
+    # describes, and one entry per colour would otherwise push the run's
+    # narrative out of the event tail the console reads.
     _retrying(store, row_id, "values_colour",
               lambda: product.add_attribute_values(colour_id, row["colors"],
-                                                   swatches=swatches))
+                                                   swatches=swatches),
+              detail=detail,
+              detail_from=lambda report: _swatch_states(detail, report))
 
     if row.get("sizes"):
         page.goto(products.find_by_sku(row["sku"]))

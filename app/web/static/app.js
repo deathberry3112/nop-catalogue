@@ -807,6 +807,7 @@ function renderRun(run) {
 
   renderOrphanWarning(run);
   renderFailures(run);
+  renderSwatchReview(run);
   renderRows(run);
   renderLog(run);
 }
@@ -895,6 +896,7 @@ function renderRows(run) {
       <td class="sku">${esc(r.sku)}</td>
       <td>${pill(r.status)}</td>
       <td>${tiers || '<span class="muted">—</span>'}</td>
+      <td>${swatchCell(r)}</td>
       <td class="muted">${steps.length}${failedSteps ? ` (${failedSteps} failed)` : ''}</td>
       <td>${r.error ? `<span class="muted">${esc(r.error.slice(0, 120))}</span>` : link}</td>
     </tr>`;
@@ -937,11 +939,195 @@ function stepEntry(step) {
   const retry = step.attempt > 1 ? `<span class="try">attempt ${step.attempt}</span>` : '';
   return `<div class="astep ${failed ? 'bad' : 'ok'}">
     <span class="t">${esc(clock(step.started_at))}</span>
-    <span class="m">${esc(label)}${retry}</span>
+    <span class="m">${esc(label)}${retry}${swatchCounts(step.detail)}</span>
     <span class="d">${esc(fmtMs(step.duration_ms))}</span>
-  </div>${failed && step.error
+  </div>${swatchBlock(step.detail)}${failed && step.error
     ? `<div class="fmsg">${esc(step.error_class || 'failed')} — ${esc(step.error)}</div>`
     : ''}`;
+}
+
+/* ── swatches ────────────────────────────────────────────────────────── */
+/* Recorded on the values_colour step by app/automation/runner.py, one entry
+   per colour the sheet ASKED a swatch for. Colours it did not ask about are
+   absent rather than listed as zero, so a product that wanted no swatches
+   shows nothing here at all — which is what keeps this an exception report
+   rather than another column of noise.
+
+   `set` and `kept` are deliberately not the same word. Both end with a swatch
+   on the value and both look identical on the storefront, but `kept` means a
+   human had already chosen one and this run refused to overwrite it. */
+
+/* Two words per state: one for the cell, one for the counts line, because
+   "1 no swatch" and "a colour that is skipped" both read badly. `hint` is the
+   hover text — the states have to make sense to somebody who has never seen
+   this screen before, and a one-word cell cannot carry that on its own. */
+const SWATCH_STATE = {
+  set: { word: 'set', count: 'set', cls: 'ok',
+         hint: 'this run chose this swatch and saved it' },
+  kept: { word: 'kept', count: 'kept', cls: '',
+          hint: 'this colour already had a swatch, so the run left it alone' },
+  missed: { word: 'not applied', count: 'not applied', cls: 'warn',
+            hint: 'a swatch was chosen but the admin never confirmed it' },
+  skipped: { word: 'no swatch', count: 'without a swatch', cls: 'warn',
+             hint: 'nothing confident enough to use, so the colour has no swatch' },
+  planned: { word: 'not reached', count: 'not reached', cls: '',
+             hint: 'the run stopped before it got to this colour' },
+};
+
+/* Mirrors CAUSE in app/colour/swatch.py. Two copies because the console never
+   asks the server what a slug means — but the slugs are the contract, so a
+   rename there is a rename here.
+
+   Headings say what happened in the store's own terms; the line beside each
+   says who can fix it. Neither mentions the map, the tiers or the resolver —
+   the person reading this uploaded a spreadsheet. */
+const SWATCH_CAUSE = {
+  unnamed:        'No swatch in this store has that name',
+  map_stale:      'Your saved swatch list is out of date for this store',
+  map_missing_id: 'Your saved swatch list names a swatch this store does not have',
+  unpaired:       'The sheet lists a different number of swatches and colours',
+  not_applied:    'A swatch was chosen but the admin never confirmed it',
+  duplicate:      'Two swatches share a name, so the first one was used',
+};
+
+const SWATCH_FIX = {
+  unnamed:        'tell the app which swatch this colour means',
+  map_stale:      'the saved entry needs updating for this store',
+  map_missing_id: 'the saved entry needs updating for this store',
+  unpaired:       'fix the sheet — one swatch per colour, spelled the same',
+  not_applied:    'check these colours on the product',
+  duplicate:      'nothing to do, unless the other one was meant',
+};
+
+/* The last attempt wins: a retried step is recorded once per attempt, and only
+   the final one describes what the product actually ended up with. */
+function swatchDetail(row) {
+  const steps = ((row && row.steps) || [])
+    .filter((s) => s.name === 'values_colour' && s.detail
+                   && (s.detail.unavailable || (s.detail.swatches || []).length));
+  return steps.length ? steps[steps.length - 1].detail : null;
+}
+
+/* Counted from the entries rather than read from detail.counts, which the
+   runner only writes once the value editor has answered. A step that DIED has
+   entries and no counts, and that is the one time somebody is reading this
+   closely — "—" would say the sheet asked for nothing. */
+function swatchTally(detail) {
+  const tally = {};
+  for (const entry of (detail && detail.swatches) || []) {
+    const state = SWATCH_STATE[entry.state] ? entry.state : 'planned';
+    tally[state] = (tally[state] || 0) + 1;
+  }
+  return tally;
+}
+
+function swatchCounts(detail) {
+  if (!detail) return '';
+  if (detail.unavailable) return '<span class="swc warn">no swatch field</span>';
+  const c = swatchTally(detail);
+  const parts = ['set', 'kept', 'missed', 'skipped', 'planned']
+    .filter((k) => c[k]).map((k) => `${c[k]} ${SWATCH_STATE[k].count}`);
+  if (!parts.length) return '';
+  const attention = (c.skipped || 0) + (c.missed || 0);
+  return `<span class="swc ${attention ? 'warn' : ''}">${esc(parts.join(' · '))}</span>`;
+}
+
+function swatchBlock(detail) {
+  if (!detail) return '';
+  if (detail.unavailable) {
+    return `<div class="fmsg">this store's admin has no colour-swatch box, so the
+      sheet's Color Swatch column could not be used</div>`;
+  }
+  const list = detail.swatches || [];
+  if (!list.length) return '';
+  return `<div class="swatches">${list.map(swatchLine).join('')}</div>`;
+}
+
+function swatchLine(s) {
+  const state = SWATCH_STATE[s.state] ? s.state : 'planned';
+  const named = s.swatch_label
+    ? `${s.swatch_label} (${s.swatch_id})`
+    : (s.swatch_id ? `swatch ${s.swatch_id}` : '');
+  // The short form of the duplicate case. The full sentence is on the roll-up
+  // above, where there is room for it; on one line of forty this is the part
+  // that tells you it was a coin flip.
+  const alts = (s.alternatives || []).length
+    ? `${s.alternatives.length + 1} swatches share this name — used the first`
+    : '';
+  const note = alts || s.note || '';
+  const asked = s.asked && s.asked !== s.colour
+    ? ` <span class="asked">sheet asked for ${esc(s.asked)}</span>` : '';
+  return `<div class="sw ${esc(state)}">
+    <span class="c">${esc(s.colour)}${asked}</span>
+    <span class="st ${esc(SWATCH_STATE[state].cls)}"
+          title="${esc(SWATCH_STATE[state].hint)}">${esc(SWATCH_STATE[state].word)}</span>
+    <span class="v">${named ? esc(named) : '<span class="muted">—</span>'}</span>
+    <span class="n" title="${esc(s.note || note)}">${esc(note)}</span>
+  </div>`;
+}
+
+/* The per-product cell: enough to know which row is worth opening, never a zero. */
+function swatchCell(row) {
+  const detail = swatchDetail(row);
+  if (!detail) return '<span class="muted">—</span>';
+  if (detail.unavailable) return '<span class="pill warn">no field</span>';
+  const c = swatchTally(detail);
+  const pills = [];
+  if (c.set) pills.push(`<span class="pill ok">${c.set} set</span>`);
+  if (c.kept) pills.push(`<span class="pill">${c.kept} kept</span>`);
+  const attention = (c.skipped || 0) + (c.missed || 0);
+  if (attention) pills.push(`<span class="pill warn">${attention} without</span>`);
+  if (c.planned) pills.push(`<span class="pill">${c.planned} not reached</span>`);
+  return pills.join(' ') || '<span class="muted">—</span>';
+}
+
+/* Grouped by CAUSE, for the same reason failures are: a 200-product run does
+   not have 40 swatch problems, it has two — and opening 40 dropdowns to find
+   that out is how a report gets ignored. Only colours worth a look appear here;
+   one that was set or kept with nothing surprising about it does not. */
+function renderSwatchReview(run) {
+  const groups = {};
+  const unavailable = [];
+  for (const row of run.rows) {
+    const detail = swatchDetail(row);
+    if (!detail) continue;
+    if (detail.unavailable) { unavailable.push(row.sku); continue; }
+    for (const entry of detail.swatches || []) {
+      const cause = entry.cause || (entry.state === 'missed' ? 'not_applied' : '');
+      if (!cause) continue;
+      (groups[cause] ||= []).push({ sku: row.sku, entry });
+    }
+  }
+
+  const keys = Object.keys(groups);
+  $('#r-swatches').hidden = !keys.length && !unavailable.length;
+  if (!keys.length && !unavailable.length) return;
+
+  // Problems first, the informational duplicate group last — it needs no
+  // action, and putting it on top would bury the ones that do.
+  keys.sort((a, b) => (a === 'duplicate') - (b === 'duplicate')
+                      || groups[b].length - groups[a].length);
+
+  const banner = unavailable.length
+    ? `<div class="alert warn">This store's admin has no colour-swatch box, so the
+       sheet's Color Swatch column could not be used on ${unavailable.length}
+       product(s).</div>`
+    : '';
+
+  $('#r-swatch-groups').innerHTML = banner + keys.map((cause) => `
+    <details class="fgroup${cause === 'duplicate' ? ' info' : ''}">
+      <summary>${esc(SWATCH_CAUSE[cause] || cause)}
+        <span class="pill ${cause === 'duplicate' ? '' : 'warn'}">${groups[cause].length}</span>
+        <span class="blame">${esc(SWATCH_FIX[cause] || '')}</span></summary>
+      <div class="fbody">
+        ${groups[cause].map(({ sku, entry }) => `
+          <div>
+            <strong class="mono">${esc(sku)}</strong>
+            <span class="swname">${esc(entry.colour)}</span>
+            <div class="fmsg">${esc(entry.note || '')}</div>
+          </div>`).join('')}
+      </div>
+    </details>`).join('');
 }
 
 function eventEntry(e) {
@@ -957,8 +1143,12 @@ function renderLog(run) {
 
   // A poll every 1.5s that rewrote this would snap open dropdowns shut under
   // the reader's cursor. Only rebuild when something actually changed.
+  // Includes the swatch counts: a step is recorded once and then never grows,
+  // but the LAST attempt of values_colour is what carries them, so a retry can
+  // change this block without changing how many steps there are.
   const sig = `${events.length}|${run.rows
-    .map((r) => `${r.status}:${(r.steps || []).length}`).join(',')}`;
+    .map((r) => `${r.status}:${(r.steps || []).length}:${
+      JSON.stringify(swatchTally(swatchDetail(r)))}`).join(',')}`;
   if (sig === state.logSig) return;
   state.logSig = sig;
 
@@ -1002,6 +1192,10 @@ function renderLog(run) {
     }
 
     const failed = entries.filter((x) => x.failed).length;
+    // Worth saying on the closed line: a swatch never fails a product, so
+    // without this the only clue is one row of a block nobody has opened.
+    const counts = swatchTally(swatchDetail(row));
+    const without = (counts.skipped || 0) + (counts.missed || 0);
     return `<details class="alog" data-idx="${esc(index)}"
               ${state.openRows.has(String(index)) ? 'open' : ''}>
       <summary>
@@ -1009,7 +1203,8 @@ function renderLog(run) {
         <span class="m">${esc(e.message)}</span>
         ${row ? pill(row.status) : ''}
         <span class="acount">${entries.length} action${entries.length === 1 ? '' : 's'}${
-          failed ? `, ${failed} failed` : ''}</span>
+          failed ? `, ${failed} failed` : ''}${
+          without ? `, ${without} colour${without === 1 ? '' : 's'} without a swatch` : ''}</span>
       </summary>
       <div class="abody">${entries.map((x) => x.html).join('')}</div>
     </details>`;
