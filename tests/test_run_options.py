@@ -155,7 +155,7 @@ def test_run_refuses_without_credentials():
 
 
 def test_run_takes_credentials_from_the_caller_over_the_environment(monkeypatch):
-    """The front end will pass these per request; env is only the fallback."""
+    """Caller-supplied Credentials beat ADMIN_* env vars."""
     monkeypatch.setenv("ADMIN_EMAIL", "env@example.test")
     monkeypatch.setenv("ADMIN_PASSWORD", "env-secret")
     seen = {}
@@ -199,13 +199,13 @@ def test_password_never_appears_in_repr():
     "example.test/Admin",                        # no scheme at all
 ])
 def test_non_http_admin_urls_are_rejected(url):
-    """base_url becomes user-supplied the moment the form ships."""
+    """base_url must be http(s), whether it came from env or a request."""
     with pytest.raises(main.ConfigError, match="http"):
         main.Credentials(url, "admin@example.test", "hunter2")
 
 
 def test_partial_credentials_construct_but_do_not_pass_require():
-    """The form can build this while the user is still typing."""
+    """Incomplete Credentials may be constructed; require() is the gate."""
     c = main.Credentials("https://example.test/Admin", "admin@example.test", "")
     with pytest.raises(main.ConfigError, match="password are required"):
         c.require()

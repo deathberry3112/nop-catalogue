@@ -48,12 +48,11 @@ and no complaint. So a sheet still written that way is refused with a message
 saying which it is — see _detect_legacy_layout.
 
 WHAT THIS REFUSES TO DO IS THE POINT. A column it does not recognise is
-reported, never ignored. The previous analysis of this pipeline found that an
-unexpected attribute column (say "Material") would most likely be dropped in
-silence — the product would be created with only colours and sizes, the
-combinations generated over two dimensions, and the report would still say
-"Added". A wrong catalogue with a clean report is the worst outcome available
-here, so an unknown column is a row-level error and the row does not run.
+reported, never ignored. An unexpected attribute column must not be dropped in
+silence — the product would be created without it, the combinations generated
+over one dimension too few, and the report would still say "Added". A wrong
+catalogue with a clean report is the worst outcome available here, so an unknown
+column is a row-level error and the row does not run.
 
 Validation errors land on the row rather than raising: the user should see
 every problem in their workbook at once, not the first one. main.partition()
@@ -858,9 +857,9 @@ def _check_attribute_columns(sheet: str, groups: list[dict],
 
     "Product Attributes Type" is spelled identically for every attribute and
     they are told apart by position, which makes them easy to get wrong and, in
-    the old parser, quiet about it: a missing second column fell back to "Size"
-    in silence, and a second column repeating "Color" made the runner file every
-    size as a colour.
+    the old parser, quiet about it: a missing second column used to fall back to
+    "Size" in silence, and a second column repeating "Color" made the runner
+    file every size as a colour. The check below reports that instead.
 
     Reported once per sheet and in the user's vocabulary. The header they can
     search for is "Product Attributes Type"; "the size attribute column" names

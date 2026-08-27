@@ -2,13 +2,13 @@
 """
 Write the automation's results back out as an .xlsx — the OUTPUT side.
 
-This is the guardrail that closes the loop. The app parses the user's uploaded
-workbook into JSON; main.py drives Playwright and produces a run summary; this
+This is the guardrail that closes the loop. The app parses the uploaded
+workbook into rows; main.run drives Playwright and produces a run summary; this
 module turns (original rows + that summary) into a new workbook the user gets
 back, so they can see — per product — what was Added, what Failed, and what was
 never reached because the run stopped midway:
 
-    app -> JSON -> main.py -> Playwright -> summary -> xlsxCreator.py -> out.xlsx
+    xlsx -> parser -> main.run -> Playwright -> summary -> xlsxCreator.py -> out.xlsx
 
 The output mirrors the input template (one sheet per category, same 12 columns)
 and appends two columns:
@@ -17,7 +17,7 @@ and appends two columns:
     Note     the error message for a failed row, or why it was skipped
 
 Because every row carries a Status, the user can re-upload this same file to
-finish the batch: the app re-parses it into JSON (carrying Status into each
+finish the batch: the app re-parses it into rows (carrying Status into each
 row), and main.py skips any row already marked Added — so nothing is added
 twice. That skip lives in main.py; this module just makes the Status honest.
 

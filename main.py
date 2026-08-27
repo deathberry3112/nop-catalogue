@@ -2,9 +2,9 @@
 """
 Entry point for the nopCommerce product-upload automation.
 
-This is triggered from the web front end: the user uploads an .xlsx, the web
-layer parses and validates it into rows, and then calls run(). There is no
-command line and no argv — every setting arrives as a RunOptions object:
+This is triggered from the web console: the user uploads an .xlsx, the web
+layer parses and validates it into rows, and then calls run(). run() does not
+parse argv — every setting arrives as a RunOptions object:
 
     app (xlsx upload) -> rows -> main.run() -> Playwright -> summary
                                             -> xlsxCreator -> report.xlsx
@@ -62,18 +62,15 @@ from urllib.parse import urlparse
 # It must accept an already-created `page`, log in, loop the rows, and return a
 # summary. It must NOT call sync_playwright() or launch a browser.
 #
-# The real module (app.automation.runner) doesn't exist yet, so it is NOT
-# imported at load time. resolve_runner() picks it up automatically once you
-# create it, and falls back to the built-in stub until then — letting you
-# exercise the whole Playwright launch/context/page path with nothing to write.
+# Production is app.automation.runner.run_batch. resolve_runner() imports that
+# and falls back to _stub_run_batch only if the import fails.
 # ---------------------------------------------------------------------------
 
 log = logging.getLogger("launch")
 
 ROOT = Path(__file__).parent
 
-# The parsed rows used when nothing else is supplied. Stands in for the upload
-# until the front end posts its own parsed payload.
+# Checked-in fixture for `python main.py` and tests. Uploads go through the parser.
 DEFAULT_PAYLOAD = ROOT / "parsed_rows.json"
 
 # Row `status` values that mean "already handled — don't add again". A row picks
@@ -141,10 +138,9 @@ class RunOptions:
 class Credentials:
     """Which admin to drive, and who to sign in as.
 
-    Today these come from the environment (from_env). When the front end ships,
-    it builds this object from the upload form instead and passes it to run() —
-    that is the only change needed, which is why it is a parameter and not a
-    module-level lookup.
+    The web layer builds this per request (form fields, else ADMIN_*). from_env()
+    is the CLI / omitted-argument path. It is a parameter, not a module-level
+    lookup, so a caller can pin a host without changing process env.
 
     `password` is repr=False so it cannot surface in a traceback, a log line, or
     a debugger frame dump. Keep it that way: this object gets passed around, and
@@ -156,8 +152,8 @@ class Credentials:
     password: str = field(repr=False, default="")
 
     def __post_init__(self):
-        # base_url will be user-supplied once the form exists. Anything but
-        # http(s) — file://, javascript: — is not a site, it is an attack.
+        # Anything but http(s) — file://, javascript: — is not a site, it is an
+        # attack. The URL may come from env or from a request body.
         scheme = urlparse(self.base_url).scheme.lower()
         if scheme not in {"http", "https"}:
             raise ConfigError(f"Admin URL must be http(s), got {self.base_url!r}")
@@ -172,7 +168,7 @@ class Credentials:
 
     def require(self) -> "Credentials":
         """Raise unless we can actually sign in. Separate from __post_init__ so
-        the front end can build a half-filled object while the user is typing."""
+        a caller can construct Credentials before email/password are filled."""
         if not self.email or not self.password:
             raise ConfigError("Admin email and password are required.")
         return self
@@ -193,12 +189,10 @@ def resolve_runner():
 
 def _stub_run_batch(page, rows, *, base_url, email, password, commit,
                     on_existing, progress):
-    """Placeholder runner used until app.automation.runner exists.
+    """Fallback if app.automation.runner.run_batch cannot be imported.
 
-    Exercises the parts run() cares about — a live `page`, navigation, and the
-    summary contract — so you can confirm Playwright launches and drives a real
-    browser end to end. It logs in to nothing and creates nothing; `commit` is
-    ignored on purpose.
+    Navigates only: no login, no writes. `commit` is ignored. Production never
+    takes this path while the runner module is present.
     """
     start = time.monotonic()
     log.info("STUB runner: %d row(s), base_url=%s (no login, no writes)",
@@ -296,8 +290,8 @@ def load_rows(source: str | Path) -> list[dict]:
 
 
 def rows_from(data) -> list[dict]:
-    """Validate an already-decoded payload into a list of rows. This is the one
-    the web layer wants: it has the JSON in hand, not a file."""
+    """Validate an already-decoded payload into a list of rows (parser envelope
+    or a bare list)."""
     if isinstance(data, dict):
         rows = data.get("rows")
         if rows is None:
@@ -362,7 +356,7 @@ def ensure_dependencies(auto_install: bool = False) -> None:
 
 
 # ---------------------------------------------------------------------------
-# The entry point the front end calls
+# run() — what the web layer calls
 # ---------------------------------------------------------------------------
 
 def partition(rows: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
@@ -388,7 +382,7 @@ def run(rows: list[dict], options: RunOptions | None = None,
         run(rows, RunOptions(commit=True), Credentials(base_url, email, password))
 
     It never reads argv, never prompts, and never calls sys.exit. Credentials
-    default to the environment so a run works today without a front end.
+    default to the environment when the caller omits them (CLI / tests).
 
     `store` is an optional app.store.RunStore. When given, the runner records
     every row, step and failure against it; when omitted the run behaves
@@ -473,13 +467,13 @@ def run(rows: list[dict], options: RunOptions | None = None,
 
 def run_payload(source: str | Path = DEFAULT_PAYLOAD,
                 options: RunOptions | None = None, **kwargs) -> dict:
-    """run() against a parsed-rows JSON file. Stands in for the upload until the
-    front end posts its own payload."""
+    """run() against a parsed-rows JSON file. Used by `python main.py` and tests;
+    the web layer passes rows from parse_workbook instead."""
     return run(load_rows(source), options, **kwargs)
 
 
 if __name__ == "__main__":
-    # Local development only — the front end calls run()/run_payload() directly.
+    # Local development only — the web layer calls run() directly.
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s  %(message)s",

@@ -183,8 +183,8 @@ def report_path() -> Path:
 
 @pytest.fixture(scope="session")
 def rows() -> list[dict]:
-    """The checked-in parsed rows, validated through main.load_rows(). Stands in
-    for an uploaded workbook until the front end posts its own payload.
+    """The checked-in parsed_rows.json fixture, validated through main.load_rows().
+    Production uploads go through parse_workbook, not this file.
 
     Two knobs narrow it, for when you want a two-minute run rather than a
     ten-minute one:

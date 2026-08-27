@@ -1,17 +1,14 @@
 """run_batch — the automation proper.
 
-This is the module main.py has been looking for since it was written: it
-resolves this at import time and falls back to a stub when it is absent. The
-logic here was proven as a live pytest test before it became a runner, which is
-why the flow is not novel — what is new is that it now classifies its failures,
-records what it did, and retries only the things worth retrying.
+main.resolve_runner imports this. If the import fails it falls back to a stub;
+production uses this path.
 
     run_batch(page, rows, *, base_url, email, password, commit, on_existing,
               progress, store=None) -> summary
 
-CONTRACT (main.py's, unchanged): take an already-created `page`, log in, loop
-the rows, return a summary. Never launch a browser — main.py owns that, so
-there is exactly one place that configures Chromium.
+CONTRACT (main.py's): take an already-created `page`, log in, loop the rows,
+return a summary. Never launch a browser — main.py owns that, so there is
+exactly one place that configures Chromium.
 
 Per row, the flow and its guard:
 
