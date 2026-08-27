@@ -43,7 +43,50 @@ OVERRIDES: dict[str, str] = {}
 
 
 class CombinationError(Exception):
-    """The payload's combinations cannot be matched to its colours and sizes."""
+    """The payload's combinations cannot be matched to its attribute values."""
+
+
+def attribute_names(row: dict) -> tuple[str, ...]:
+    """The attributes this row's combinations are keyed on, in sheet order.
+
+    THE KEY SPACE IS A CONTRACT between combination_map() here and
+    ProductPage.apply_combination_skus(), which reads each generated row's own
+    Attributes cell and builds the same tuple to look it up. Both take their
+    order from this function, so neither depends on the order nopCommerce
+    generated the grid in.
+
+    Only attributes the row actually FILLS count. A hard hat whose Size column
+    is empty is keyed on colour alone, and its generated combinations carry only
+    a Color — a two-part key would match none of them.
+
+    Rows with no `attributes` are payloads written before attributes were
+    general (a JSON file, an old report); they speak colour and size, and are
+    keyed exactly as they always were.
+    """
+    attributes = row.get("attributes")
+    if attributes:
+        return tuple(a["name"] for a in attributes if a.get("values"))
+
+    names = [row.get("color_attr") or "Color"]
+    if row.get("sizes"):
+        names.append(row.get("size_attr") or "Size")
+    return tuple(names)
+
+
+def variant_key(variant: dict, names: tuple[str, ...]) -> tuple[str, ...]:
+    """One variant's combination key, in `names` order."""
+    values = variant.get("values")
+    if values is None:                      # a variant written the colour/size way
+        values = {}
+        if variant.get("color"):
+            values[names[0]] = variant["color"]
+        if len(names) > 1 and variant.get("size"):
+            values[names[1]] = variant["size"]
+    return tuple(str(values.get(name) or "") for name in names)
+
+
+def _describe(key: tuple[str, ...]) -> str:
+    return " / ".join(part for part in key if part) or "(no attribute values)"
 
 
 def _words(name: str) -> list[str]:
@@ -424,13 +467,20 @@ def explicit_map(row: dict) -> dict[tuple[str, str | None], str] | None:
     if not variants:
         return None
 
-    mapping: dict[tuple[str, str | None], str] = {}
+    # KEYED ON EVERY ATTRIBUTE THE ROW HAS, not on colour and size. A sign board
+    # is Sign Material x Sign Size and a vest is Colour x Size; keying on two
+    # named fields would collapse five materials onto one key and silently lose
+    # four fifths of the product. `attribute_names` is the sheet's own column
+    # order, which is what makes a combination's identity stable.
+    names = attribute_names(row)
+
+    mapping: dict[tuple[str, ...], str] = {}
     for variant in variants:
-        key = (variant.get("color") or "", variant.get("size") or None)
+        key = variant_key(variant, names)
         sku = variant.get("sku") or ""
         if key in mapping:
             raise CombinationError(
-                f"{row.get('sku')}: two combinations for {key}: "
+                f"{row.get('sku')}: two combinations for {_describe(key)}: "
                 f"{mapping[key]!r} and {sku!r}")
         mapping[key] = sku
     return mapping
@@ -466,7 +516,8 @@ def combination_map(row: dict, codes: dict[str, str] | None = None
     aliases = size_aliases(row)
     colour_implied = implied_colour(row) is not None
 
-    mapping: dict[tuple[str, str | None], str] = {}
+    names = attribute_names(row)
+    mapping: dict[tuple[str, ...], str] = {}
     for combination in row.get("combinations") or []:
         code, size = split_combination(combination, base, sizes, implied=implied,
                                        aliases=aliases,
@@ -476,26 +527,37 @@ def combination_map(row: dict, codes: dict[str, str] | None = None
             raise CombinationError(
                 f"{row['sku']}: combination {combination!r} uses code {code!r}, "
                 f"which matched no colour (mapped: {codes})")
-        key = (colour, size)
+        key = variant_key({"color": colour, "size": size}, names)
         if key in mapping:
             raise CombinationError(
-                f"{row['sku']}: two combinations for {key}: "
+                f"{row['sku']}: two combinations for {_describe(key)}: "
                 f"{mapping[key]!r} and {combination!r}")
         mapping[key] = combination
 
     return _check_counts(row, mapping)
 
 
-def _check_counts(row: dict, mapping: dict[tuple[str, str | None], str]
-                  ) -> dict[tuple[str, str | None], str]:
+def _check_counts(row: dict, mapping: dict[tuple[str, ...], str]
+                  ) -> dict[tuple[str, ...], str]:
     """The gate every mapping answers to, however it was arrived at: one
-    combination for each colour x size the product will generate."""
-    colours = row.get("colors") or []
-    sizes = row.get("sizes") or []
-    expected = len(colours) * max(1, len(sizes))
+    combination for each cell of the grid the product will generate."""
+    attributes = row.get("attributes")
+    if attributes:
+        counts = [(a["name"], len(a["values"])) for a in attributes if a.get("values")]
+    else:
+        counts = [(row.get("color_attr") or "Color", len(row.get("colors") or []))]
+        if row.get("sizes"):
+            counts.append((row.get("size_attr") or "Size", len(row["sizes"])))
+
+    expected = 1
+    for _, count in counts:
+        expected *= count
+    if not counts:
+        expected = 0
+
     if len(mapping) != expected:
+        shown = " x ".join(f"{count} {name}" for name, count in counts) or "no attributes"
         raise CombinationError(
             f"{row.get('sku')}: {len(mapping)} combination(s) for "
-            f"{len(colours)} colour(s) x {max(1, len(sizes))} size(s) "
-            f"— expected {expected}")
+            f"{shown} — expected {expected}")
     return mapping

@@ -43,7 +43,9 @@ def _row(**over) -> dict:
 
 
 def _index(*entries) -> dict:
-    return {e["sku"]: e for e in entries}
+    """Results keyed the way write_report keys them — by (kind, SKU), because a
+    phase-1 product row and a phase-2 configurator row may share a SKU."""
+    return {xc._result_key(e): e for e in entries}
 
 
 # --- status precedence -----------------------------------------------------

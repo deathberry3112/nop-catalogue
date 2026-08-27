@@ -363,8 +363,25 @@ def swatches_for_row(row: dict, options: list[tuple[str, str]]
     matching on name, and any colour with no same-named entry gets nothing and
     is named in the report. app.parser warns about the mismatch separately.
     """
-    colours = list(row.get("colors") or [])
-    wanted = [w for w in (row.get("swatches") or [])]
+    return swatches_for_values(
+        list(row.get("colors") or []), list(row.get("swatches") or []),
+        options, scope=row.get("source_sheet"))
+
+
+def swatches_for_values(values: list[str], wanted: list[str],
+                        options: list[tuple[str, str]], *,
+                        scope: str | None = None
+                        ) -> tuple[dict[str, str], list[str], list[dict]]:
+    """The same question for ONE attribute's values, whatever it is called.
+
+    swatches_for_row is the colour-shaped caller; this is what the runner uses
+    once attributes stopped being colour and size. A swatch is asked for by a
+    "<Attribute> Swatch" column beside the values, so any attribute may have
+    one — the map and the label matching below do not care what the attribute
+    is named, only what the admin is offering.
+    """
+    colours = list(values)
+    wanted = list(wanted)
     if not colours or not any(w.strip() for w in wanted):
         return {}, [], []
 
@@ -376,7 +393,7 @@ def swatches_for_row(row: dict, options: list[tuple[str, str]]
         pairs = list(zip(colours, wanted))
 
     names = [name for _, name in pairs if name and name.strip()]
-    choices = resolve_swatches(names, options, scope=row.get("source_sheet"))
+    choices = resolve_swatches(names, options, scope=scope)
 
     resolved: dict[str, str] = {}
     problems: list[str] = []

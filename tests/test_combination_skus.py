@@ -62,7 +62,7 @@ def test_sizes_are_split_off(payload):
 
 def test_sizeless_rows_key_on_none(payload):
     row = next(r for r in payload if r["sku"] == "CP-30-C100V")
-    assert cs.combination_map(row)[("Yellow", None)] == "CP-30-C100V YW"
+    assert cs.combination_map(row)[("Yellow",)] == "CP-30-C100V YW"
 
 
 def test_split_combination():
@@ -350,8 +350,8 @@ def test_child_skus_that_no_heuristic_could_pair_still_map():
                   combinations=["CP-280-01", "CP-280-15"],
                   variants=[{"color": "White", "size": None, "sku": "CP-280-01"},
                             {"color": "Red", "size": None, "sku": "CP-280-15"}])
-    assert cs.combination_map(row) == {("White", None): "CP-280-01",
-                                       ("Red", None): "CP-280-15"}
+    assert cs.combination_map(row) == {("White",): "CP-280-01",
+                                       ("Red",): "CP-280-15"}
 
 
 def test_a_supplied_code_map_is_ignored_when_the_sheet_stated_the_pairing():

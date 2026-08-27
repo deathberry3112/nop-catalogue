@@ -81,12 +81,6 @@ HEADER_MAP: dict[str, str] = {
     "product name": "product_name",
     "sku": "sku",
     "attribute specification value": "spec_value",
-    "color": "colors",
-    "colour": "colors",
-    "color swatch": "swatches",
-    "colour swatch": "swatches",
-    "sizes": "sizes",
-    "size": "sizes",
     "generate combinations": "generate_combinations",
     "allow out of stock": "allow_out_of_stock",
     "child sku varient": "combinations",
@@ -97,6 +91,35 @@ HEADER_MAP: dict[str, str] = {
 }
 
 ATTRIBUTE_TYPE_HEADER = "product attributes type"
+
+#: ATTRIBUTES ARE POSITIONAL, NOT NAMED, and this is the change that lets a
+#: sheet carry attributes nobody wrote code for. A "Product Attributes Type"
+#: column names an attribute; the next column along holds that attribute's
+#: values; a column after that called "<values> Swatch" holds its swatches:
+#:
+#:     Product Attributes Type | Color         | Color Swatch | Product Attributes Type | Size
+#:     Product Attributes Type | Sign Material |              | Product Attributes Type | Sign Size
+#:
+#: Colour and size are no longer special cases in the reader — they are simply
+#: the two attributes the clothing sheets happen to use. What stays specific to
+#: colour is downstream: swatch resolution and the legacy colour-code inference,
+#: both of which only make sense for a colour.
+SWATCH_SUFFIX = " swatch"
+
+#: Value columns a sheet may carry WITHOUT a "Product Attributes Type" column in
+#: front of them, and the attribute name to assume when it does. The old sheets
+#: leave the second type column off entirely — SIZE_COLUMN_MISSING below is the
+#: warning for exactly that — so dropping this fallback would refuse workbooks
+#: that parse today.
+IMPLIED_ATTRIBUTES: dict[str, str] = {
+    "color": "Color",
+    "colour": "Color",
+    "size": "Size",
+    "sizes": "Size",
+}
+
+#: The attribute a swatch column and the colour tiers apply to.
+COLOUR_ATTRIBUTE_NAMES = {"color", "colour"}
 
 TRUTHY = {"yes", "y", "true", "1", "on"}
 FALSEY = {"no", "n", "false", "0", "off", "na", ""}
@@ -121,8 +144,6 @@ VARIANT_FIELDS = ("colors", "sizes", "combinations")
 SHARED_FIELDS: dict[str, str] = {
     "product_name": "Product name",
     "spec_value": "Attribute Specification Value",
-    "color_attr": "the first 'Product Attributes Type'",
-    "size_attr": "the second 'Product Attributes Type'",
     "generate_combinations": "Generate Combinations",
     "allow_out_of_stock": "Allow Out Of Stock",
     "save_product": "Save Product",
@@ -197,33 +218,85 @@ def _split(value: Any, *, sep: str = ",") -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
-def _map_headers(header_row: tuple) -> tuple[dict[int, str], list[str]]:
-    """Column index -> field name, plus any headers we did not recognise.
+def _map_headers(header_row: tuple
+                 ) -> tuple[dict[int, str], list[str], list[dict]]:
+    """Column index -> field name, the headers we did not recognise, and the
+    attribute column groups in sheet order.
 
-    The two attribute-type columns share the header "Product Attributes Type".
-    They are told apart by position: the first is the colour attribute, the
-    second the size attribute, which is how the template lays them out.
+    Every "Product Attributes Type" column opens a group: it names the
+    attribute, the next column holds that attribute's values, and a following
+    "<values> Swatch" column holds its swatches. Any number of groups, in any
+    order, under any names — which is what lets a Sign Boards sheet carry
+    Sign Material and Sign Size without a line of code knowing those words.
+
+    A value column with no type column in front of it still opens a group when
+    the header is one this template has always understood (Color, Size), so
+    sheets written before the second type column existed keep parsing.
     """
+    headers = [_norm(cell) for cell in header_row]
     mapping: dict[int, str] = {}
     unknown: list[str] = []
-    attribute_columns = 0
+    groups: list[dict] = []
+    claimed: set[int] = set()
 
-    for index, cell in enumerate(header_row):
-        header = _norm(cell)
-        if not header:
+    def next_used(start: int) -> int | None:
+        return next((i for i in range(start, len(headers)) if headers[i]), None)
+
+    for index, header in enumerate(headers):
+        if not header or index in claimed:
             continue
+
         if header == ATTRIBUTE_TYPE_HEADER:
-            attribute_columns += 1
-            mapping[index] = "color_attr" if attribute_columns == 1 else "size_attr"
-        elif header in HEADER_MAP:
+            value_col = next_used(index + 1)
+            if value_col is None:
+                unknown.append(str(header_row[index]).strip())
+                continue
+            groups.append(_group(header_row, headers, index, value_col, claimed))
+            continue
+
+        if header in IMPLIED_ATTRIBUTES:
+            groups.append(_group(header_row, headers, None, index, claimed))
+            continue
+
+        if header in HEADER_MAP:
             mapping[index] = HEADER_MAP[header]
         else:
-            unknown.append(str(cell).strip())
-    return mapping, unknown
+            unknown.append(str(header_row[index]).strip())
+
+    return mapping, unknown, groups
+
+
+def _group(header_row: tuple, headers: list[str], type_col: int | None,
+           value_col: int, claimed: set[int]) -> dict:
+    """One attribute's columns: where its name, values and swatches live."""
+    label = str(header_row[value_col]).strip()
+    swatch_col = None
+
+    following = next((i for i in range(value_col + 1, len(headers)) if headers[i]),
+                     None)
+    if following is not None and headers[following] == headers[value_col] + SWATCH_SUFFIX:
+        swatch_col = following
+
+    claimed.add(value_col)
+    if type_col is not None:
+        claimed.add(type_col)
+    if swatch_col is not None:
+        claimed.add(swatch_col)
+
+    return {
+        "type_col": type_col,
+        "value_col": value_col,
+        "swatch_col": swatch_col,
+        # What to call the attribute when no type column names it. The column
+        # header is the sheet's own word for it, so "Size" stays "Size".
+        "default_name": IMPLIED_ATTRIBUTES.get(headers[value_col], label),
+        "label": label,
+        "is_colour": headers[value_col] in COLOUR_ATTRIBUTE_NAMES,
+    }
 
 
 def _read_variant(values: tuple, mapping: dict[int, str], *, sheet: str,
-                  row_number: int) -> dict | None:
+                  row_number: int, groups: list[dict] | None = None) -> dict | None:
     """One worksheet line -> one variant record, or None if the line is blank.
 
     Nothing is validated here. This is a transcription: the cells this line
@@ -232,19 +305,36 @@ def _read_variant(values: tuple, mapping: dict[int, str], *, sheet: str,
     the assembled product, because that is the level most of the questions are
     asked at ("do these colours and sizes cover every child SKU?").
     """
+    groups = groups or []
     raw = {field: values[i] for i, field in mapping.items() if i < len(values)}
-    if not any(_text(v) for v in raw.values()):
+
+    def cell(index: int | None):
+        return values[index] if index is not None and index < len(values) else None
+
+    # One entry per attribute the SHEET declares, in sheet order, whether or not
+    # this line fills it. Order is what makes a combination's identity stable.
+    attributes = []
+    for group in groups:
+        attributes.append({
+            "name": _text(cell(group["type_col"])) or group["default_name"],
+            "declared": _text(cell(group["type_col"])),
+            "values": _split(cell(group["value_col"])),
+            "swatches": _split(cell(group["swatch_col"])),
+            "has_type_column": group["type_col"] is not None,
+            "is_colour": group["is_colour"],
+            "default_name": group["default_name"],
+            "has_swatch_column": group["swatch_col"] is not None,
+        })
+
+    if not any(_text(v) for v in raw.values()) and not any(
+            a["values"] or a["swatches"] for a in attributes):
         return None
 
     return {
         "sku": _text(raw.get("sku")),
         "product_name": _text(raw.get("product_name")) or _text(raw.get("sku")),
         "spec_value": _text(raw.get("spec_value")),
-        "color_attr": _text(raw.get("color_attr")) or "Color",
-        "size_attr": _text(raw.get("size_attr")) or "Size",
-        "colors": _split(raw.get("colors")),
-        "swatches": _split(raw.get("swatches")),
-        "sizes": _split(raw.get("sizes")),
+        "attributes": attributes,
         "combinations": _split(raw.get("combinations")),
         "generate_combinations": _flag(raw.get("generate_combinations")),
         "allow_out_of_stock": _flag(raw.get("allow_out_of_stock")),
@@ -252,9 +342,6 @@ def _read_variant(values: tuple, mapping: dict[int, str], *, sheet: str,
         "status": _text(raw.get("status")),
         "source_sheet": sheet,
         "source_row": row_number,
-        # Whether the sheet named the size attribute at all, per line, so the
-        # assembled product can warn about it without re-reading the mapping.
-        "_has_size_column": "size_attr" in mapping.values(),
     }
 
 
@@ -278,10 +365,11 @@ def _detect_legacy_layout(sheet: str, variants: list[dict]) -> str | None:
     telling apart, because the two readings produce the same product.
     """
     for variant in variants:
-        packed = {label: len(variant[field])
-                  for field, label in (("colors", "colour"), ("sizes", "size"),
-                                       ("combinations", "child SKU"))
-                  if len(variant[field]) > 1}
+        packed = {attribute["name"].casefold(): len(attribute["values"])
+                  for attribute in variant["attributes"]
+                  if len(attribute["values"]) > 1}
+        if len(variant["combinations"]) > 1:
+            packed["child SKU"] = len(variant["combinations"])
         if not packed:
             continue
         listed = ", ".join(f"{count} {label}s" for label, count in packed.items())
@@ -298,30 +386,67 @@ def _detect_legacy_layout(sheet: str, variants: list[dict]) -> str | None:
 def _merge(variants: list[dict], unknown_headers: list[str]) -> dict:
     """A product's variant lines -> the one row the rest of the pipeline runs.
 
-    The assembled row is the shape it has always been — colours, sizes and
-    child SKUs as parallel lists — so the runner, the report and the rollback
-    need no changes. What is new is `variants`, which carries the pairing the
-    sheet stated:
+    THE GENERAL SHAPE IS `attributes`, and everything else is derived from it:
 
-        row["variants"] -> [{"color": "Lime", "size": "S/M", "sku": "G55FF08"},
-                            ...]
+        row["attributes"] -> [{"name": "Sign Material",
+                               "values": ["Aluminum", "Plastic", ...],
+                               "swatches": [], "is_colour": False}, ...]
+        row["variants"]   -> [{"values": {"Sign Material": "Aluminum",
+                                          "Sign Size": "7 x 10"},
+                               "sku": "SN-B0014-A0710"}, ...]
 
-    combination_skus.combination_map() reads that instead of inferring it. It
-    is a list of dicts rather than the {(colour, size): sku} mapping the runner
-    wants because rows are JSON — they are persisted to the run store and
-    handed to the browser — and a tuple key survives neither.
+    A variant states which child SKU belongs to which combination of attribute
+    values, so combination_skus.combination_map() reads the pairing instead of
+    inferring it. Lists of dicts rather than the {(values): sku} mapping the
+    runner wants, because rows are JSON — persisted to the run store and handed
+    to the browser — and a tuple key survives neither.
+
+    COLOUR AND SIZE ALIASES are kept beside that (`colors`, `sizes`,
+    `color_attr`, `size_attr`, and `color`/`size` on each variant) and are
+    populated only when the sheet actually has such attributes. They are not
+    legacy debt: colour is genuinely special downstream — it is the only
+    attribute with swatches and the only one whose code can be inferred from a
+    child SKU — so the colour machinery reads them and the generic runner reads
+    `attributes`.
     """
     first = variants[0]
+    names = [a["name"] for a in first["attributes"]]
+
+    attributes: list[dict] = []
+    for index, name in enumerate(names):
+        seen: list[str] = []
+        swatch_of: dict[str, list[str]] = {}
+        for variant in variants:
+            entry = variant["attributes"][index]
+            if not entry["values"]:
+                continue
+            value = entry["values"][0]
+            if value not in seen:
+                seen.append(value)
+            if entry["swatches"]:
+                swatch_of.setdefault(value, []).append(entry["swatches"][0])
+        attributes.append({
+            "name": name,
+            "values": seen,
+            # One swatch per value, taken from the lines naming that value. Each
+            # line carries its own pair, so a swatch cannot drift onto the wrong
+            # value; a value whose lines disagree is reported by _validate.
+            "swatches": [swatch_of[v][0] for v in seen if v in swatch_of],
+            "_swatches_by_value": swatch_of,
+            "is_colour": first["attributes"][index]["is_colour"],
+            "has_type_column": first["attributes"][index]["has_type_column"],
+            "header_default": first["attributes"][index]["default_name"],
+            # Whether the SHEET carried a swatch column, not whether anything
+            # filled it — the report has to write the columns back as it found
+            # them or the round trip changes the template.
+            "has_swatch_column": first["attributes"][index]["has_swatch_column"],
+        })
 
     row: dict[str, Any] = {
         "sku": first["sku"],
         "product_name": first["product_name"],
         "spec_value": first["spec_value"],
-        "color_attr": first["color_attr"],
-        "size_attr": first["size_attr"],
-        "colors": _unique(v["colors"][0] for v in variants if v["colors"]),
-        "sizes": _unique(v["sizes"][0] for v in variants if v["sizes"]),
-        "swatches": [],
+        "attributes": attributes,
         "combinations": [v["combinations"][0] for v in variants if v["combinations"]],
         "variants": [],
         "generate_combinations": first["generate_combinations"],
@@ -335,53 +460,109 @@ def _merge(variants: list[dict], unknown_headers: list[str]) -> dict:
         "warnings": [],
     }
 
-    # One swatch per colour, taken from the lines naming that colour. Under the
-    # old template the two columns were parallel lists and stayed aligned only
-    # by luck; here each line carries its own pair, so the swatch cannot drift
-    # onto the wrong colour. A colour whose lines disagree is reported by
-    # _validate rather than resolved.
-    swatches: dict[str, list[str]] = {}
-    for variant in variants:
-        if variant["colors"] and variant["swatches"]:
-            swatches.setdefault(variant["colors"][0], []).append(variant["swatches"][0])
-    row["_swatches_by_colour"] = swatches
-    row["swatches"] = [swatches[c][0] for c in row["colors"] if c in swatches]
+    # NAMES FIRST, THEN VARIANTS. A variant's values are keyed by attribute
+    # name, so building them before a repeated name is repaired would collapse
+    # two attributes onto one key and lose the first one's value.
+    _name_the_size_attribute(row, attributes, names)
 
     for variant in variants:
         if not variant["combinations"]:
             continue
+        stated = {names[i]: entry["values"][0]
+                  for i, entry in enumerate(variant["attributes"])
+                  if entry["values"]}
         row["variants"].append({
-            "color": variant["colors"][0] if variant["colors"] else "",
-            "size": variant["sizes"][0] if variant["sizes"] else None,
+            "values": stated,
             "sku": variant["combinations"][0],
             "source_row": variant["source_row"],
         })
+
+    _add_colour_aliases(row, attributes, names)
 
     status = next((v["status"] for v in variants if v["status"]), "")
     if status:
         row["status"] = status                 # a re-uploaded report: resume it
 
-    # The two "Product Attributes Type" columns are positional, so the second
-    # one naming "Color" names the SAME attribute twice. Not a harmless typo:
-    # add_attribute is idempotent BY NAME, so the size pass would fetch the
-    # colour attribute back and file "S/M" as a ninth colour. A blank cell
-    # already falls back to "Size"; a cell repeating the colour attribute means
-    # the same thing, so it is treated the same way.
-    #
-    # The row warning stays short because the full explanation belongs to the
-    # SHEET — see _check_attribute_columns. Repeating three sentences on every
-    # one of twenty rows is noise, but the row still needs a warning so it does
-    # not tick itself for committing.
-    if row["sizes"]:
-        if not first["_has_size_column"]:
-            row["warnings"].append(SIZE_COLUMN_MISSING)
-            row["size_attr"] = "Size"
-        elif row["size_attr"] == row["color_attr"]:
-            row["warnings"].append(SIZE_COLUMN_WRONG)
-            row["size_attr"] = "Size"
-
     _validate(row, variants, unknown_headers)
+    for attribute in row["attributes"]:
+        attribute.pop("_swatches_by_value", None)
     return row
+
+
+def _name_the_size_attribute(row: dict, attributes: list[dict],
+                             names: list[str]) -> None:
+    """Fix a second attribute the sheet failed to name, or named as the first.
+
+    The type columns are positional, so a second one repeating "Color" names the
+    SAME attribute twice. Not a harmless typo: add_attribute is idempotent BY
+    NAME, so the second pass would fetch the first attribute back and file "S/M"
+    as a ninth colour. A blank cell already falls back to the column header; a
+    cell repeating the previous attribute means the same thing, so it is treated
+    the same way.
+
+    Only ever applied to an attribute whose column header says what it is — the
+    old Color/Size template. A sheet naming its own attributes ("Sign Size") has
+    nothing to fall back to and a repeated name there is a plain error, reported
+    by _validate rather than silently repaired.
+    """
+    for index, attribute in enumerate(attributes):
+        if index == 0 or not attribute["values"]:
+            continue
+        default = IMPLIED_ATTRIBUTES.get(_norm(attribute["name"]))
+        header_default = attribute.get("header_default")
+        if not attribute["has_type_column"]:
+            reason = SIZE_COLUMN_MISSING
+        elif attribute["name"] in names[:index]:
+            reason = SIZE_COLUMN_WRONG
+        else:
+            continue
+        row["warnings"].append(reason)
+        # Which attribute, not just that something was repaired — otherwise the
+        # sheet-level banner fires once per attribute column on the sheet.
+        row.setdefault("_repaired", {})[index] = reason
+        repaired = header_default or default or "Size"
+        if repaired == attribute["name"]:
+            # Nothing to fall back to — the column header says the same thing
+            # the type cell does. Saying "assuming X" when X is what it already
+            # says would be a repair that repairs nothing; _validate reports the
+            # duplicate instead.
+            row["warnings"].pop()
+            row.get("_repaired", {}).pop(index, None)
+            continue
+        attribute["name"] = repaired
+        names[index] = repaired
+
+
+def _add_colour_aliases(row: dict, attributes: list[dict],
+                        names: list[str]) -> None:
+    """Populate the colour/size view of this row, where it has one.
+
+    The colour resolver, the swatch module and combination_skus all speak
+    colours and sizes, because those are the things a child SKU encodes and the
+    things a swatch attaches to. A sign board has neither, so it gets empty
+    lists and none of that machinery engages.
+    """
+    colour = next((a for a in attributes if a["is_colour"]), None)
+    # The "size" of a colour product is whatever second attribute it actually
+    # fills. A product with no colour has neither: leaving these empty is what
+    # keeps the colour tiers, the swatch resolver and the child-SKU inference
+    # from engaging on a sheet about sign materials.
+    sized = next((a for a in attributes if a is not colour and a["values"]),
+                 None) if colour else None
+
+    row["color_attr"] = colour["name"] if colour else (
+        attributes[0]["name"] if attributes else "Color")
+    row["colors"] = list(colour["values"]) if colour else []
+    row["swatches"] = list(colour["swatches"]) if colour else []
+    row["_swatches_by_colour"] = dict(colour["_swatches_by_value"]) if colour else {}
+    row["size_attr"] = sized["name"] if sized else (
+        attributes[1]["name"] if len(attributes) > 1 else "Size")
+    row["sizes"] = list(sized["values"]) if sized else []
+
+    for variant in row["variants"]:
+        values = variant["values"]
+        variant["color"] = values.get(colour["name"], "") if colour else ""
+        variant["size"] = values.get(sized["name"]) if sized else None
 
 
 def _validate(row: dict, variants: list[dict], unknown_headers: list[str]) -> None:
@@ -398,9 +579,26 @@ def _validate(row: dict, variants: list[dict], unknown_headers: list[str]) -> No
     # product without it produces a wrong catalogue and a clean report.
     if unknown_headers:
         errors.append(
-            f"unrecognised column(s) {unknown_headers} — this automation only "
-            f"models colour and size attributes, and will not create a product "
-            f"from a sheet it does not fully understand")
+            f"unrecognised column(s) {unknown_headers} — an attribute needs a "
+            f"'Product Attributes Type' column naming it, immediately before "
+            f"the column holding its values, and this automation will not "
+            f"create a product from a sheet it does not fully understand")
+
+    # Two attribute columns naming ONE attribute. add_attribute is idempotent
+    # by name, so the second column would fetch the first attribute back and
+    # add its values to that — one attribute holding both columns' values, and
+    # a combination grid that is the wrong shape. Caught here because the
+    # symptom downstream ("Every Sign Size x Sign Size needs a line") describes
+    # the consequence rather than the cause.
+    counts: dict[str, int] = {}
+    for attribute in row["attributes"]:
+        counts[attribute["name"]] = counts.get(attribute["name"], 0) + 1
+    for name, count in counts.items():
+        if count > 1:
+            errors.append(
+                f"{count} attribute columns are named {name!r} — each "
+                f"'Product Attributes Type' column must name a different "
+                f"attribute, or their values would be added to the same one")
 
     # These columns describe the PRODUCT, so every line of it has to agree. Two
     # lines sharing a SKU and disagreeing about the name (or about whether to
@@ -408,18 +606,20 @@ def _validate(row: dict, variants: list[dict], unknown_headers: list[str]) -> No
     # answers would have to be discarded, and nothing here knows which.
     _check_agreement(row, variants)
 
-    # Each colour's swatch comes off its own line now, so a disagreement is a
+    # Each value's swatch comes off its own line now, so a disagreement is a
     # real contradiction rather than the old column-alignment guess.
-    for colour, values in (row.pop("_swatches_by_colour", None) or {}).items():
-        distinct = _unique(values)
-        if len(distinct) > 1:
-            errors.append(
-                f"{colour!r} is given {len(distinct)} different swatches "
-                f"{distinct} — one colour has one swatch")
-
-    if row["swatches"] and len(row["swatches"]) != len(row["colors"]):
-        warnings.append(
-            f"{len(row['swatches'])} swatch(es) for {len(row['colors'])} colour(s)")
+    row.pop("_swatches_by_colour", None)
+    for attribute in row["attributes"]:
+        for value, given in (attribute.get("_swatches_by_value") or {}).items():
+            distinct = _unique(given)
+            if len(distinct) > 1:
+                errors.append(
+                    f"{value!r} is given {len(distinct)} different swatches "
+                    f"{distinct} — one value has one swatch")
+        if attribute["swatches"] and len(attribute["swatches"]) != len(attribute["values"]):
+            warnings.append(
+                f"{len(attribute['swatches'])} swatch(es) for "
+                f"{len(attribute['values'])} {attribute['name']} value(s)")
 
     _check_grid(row)
 
@@ -439,10 +639,6 @@ def _validate(row: dict, variants: list[dict], unknown_headers: list[str]) -> No
 def _check_agreement(row: dict, variants: list[dict]) -> None:
     """Product-level columns that two lines of one product disagree about."""
     for field, label in SHARED_FIELDS.items():
-        # size_attr is only meaningful when the product has sizes, and _merge
-        # may already have overridden it; judge what the sheet said, not that.
-        if field == "size_attr" and not row["sizes"]:
-            continue
         seen: dict[str, list[int]] = {}
         for variant in variants:
             value = variant[field]
@@ -455,6 +651,22 @@ def _check_agreement(row: dict, variants: list[dict]) -> None:
                 f"the lines for {row['sku'] or 'this SKU'} disagree about "
                 f"{label}: {shown}. Every line of a product must repeat the "
                 f"same values in that column.")
+
+    # The attribute NAMES are product-level too: the type columns are what tell
+    # add_attribute which attribute to map, and two lines naming different ones
+    # would configure two different products.
+    for index in range(len(row["attributes"])):
+        named: dict[str, list[int]] = {}
+        for variant in variants:
+            entry = variant["attributes"][index]
+            named.setdefault(entry["name"], []).append(variant["source_row"])
+        if len(named) > 1:
+            shown = "; ".join(f"{value!r} on row(s) {rows}"
+                              for value, rows in named.items())
+            row["errors"].append(
+                f"the lines for {row['sku'] or 'this SKU'} disagree about "
+                f"attribute {index + 1}'s name: {shown}. Every line of a "
+                f"product must repeat the same values in that column.")
 
 
 def _check_grid(row: dict) -> None:
@@ -471,6 +683,8 @@ def _check_grid(row: dict) -> None:
     product already created; a pair with two is a contradiction the sheet has
     to settle. Both are worth catching before the browser opens.
     """
+    import itertools
+
     errors = row["errors"]
 
     if not row["variants"]:
@@ -478,48 +692,58 @@ def _check_grid(row: dict) -> None:
             errors.append("Generate Combinations is set but no child SKUs are listed")
         return
 
-    if not row["colors"]:
-        errors.append("no colours are listed")
-        return
-
-    missing_colour = [v["source_row"] for v in row["variants"] if not v["color"]]
-    if missing_colour:
-        errors.append(f"row(s) {missing_colour} give a child SKU with no colour")
-
-    # A product either has sizes on every line or on none. Half and half leaves
-    # the sized lines describing a two-dimensional grid and the rest a
-    # one-dimensional one, and no reading covers both.
-    sized = [v for v in row["variants"] if v["size"]]
-    if sized and len(sized) != len(row["variants"]):
-        bare = [v["source_row"] for v in row["variants"] if not v["size"]]
+    filled = [a for a in row["attributes"] if a["values"]]
+    if not filled:
+        declared = [a["name"] for a in row["attributes"]]
         errors.append(
-            f"row(s) {bare} leave the Size cell empty while the rest of this "
-            f"product sets one — a product has sizes on every line or on none")
+            f"no attribute values are listed — this product has child SKUs but "
+            f"every attribute column ({declared or 'none declared'}) is empty")
         return
 
-    seen: dict[tuple[str, str | None], list[str]] = {}
-    for variant in row["variants"]:
-        seen.setdefault((variant["color"], variant["size"]), []).append(variant["sku"])
+    names = [a["name"] for a in filled]
 
-    for (colour, size), skus in seen.items():
-        if len(skus) > 1:
-            where = f"{colour} / {size}" if size else colour
+    # An attribute is set on every line of a product or on none of them. Half
+    # and half leaves some lines describing an N-dimensional grid and the rest
+    # an (N-1)-dimensional one, and no single reading covers both.
+    for name in names:
+        bare = [v["source_row"] for v in row["variants"]
+                if not v["values"].get(name)]
+        if bare and len(bare) != len(row["variants"]):
             errors.append(
-                f"{len(skus)} child SKUs for {where}: {skus}. One combination "
-                f"takes one child SKU.")
+                f"row(s) {bare} leave the {name} cell empty while the rest of "
+                f"this product sets one — a product sets an attribute on every "
+                f"line or on none")
+            return
+        if bare:
+            errors.append(f"row(s) {bare} give a child SKU with no {name}")
+            return
+
+    def where(key: tuple[str, ...]) -> str:
+        return " / ".join(k for k in key if k)
+
+    seen: dict[tuple[str, ...], list[str]] = {}
+    for variant in row["variants"]:
+        key = tuple(variant["values"].get(name, "") for name in names)
+        seen.setdefault(key, []).append(variant["sku"])
+
+    for key, skus in seen.items():
+        if len(skus) > 1:
+            errors.append(
+                f"{len(skus)} child SKUs for {where(key)}: {skus}. One "
+                f"combination takes one child SKU.")
 
     # Only when combinations are actually being generated. A product that is
     # not generating a grid has no grid to fill, and blocking it over a gap in
     # one it will never build would refuse a row the runner handles fine.
-    expected = [(c, s) for c in row["colors"] for s in (row["sizes"] or [None])]
-    absent = [pair for pair in expected if pair not in seen]
+    expected = list(itertools.product(*(a["values"] for a in filled)))
+    absent = [key for key in expected if key not in seen]
     if absent and row["generate_combinations"]:
-        shown = ", ".join(f"{c} / {s}" if s else c for c, s in absent[:5])
+        shown = ", ".join(where(key) for key in absent[:5])
         more = f" (+{len(absent) - 5} more)" if len(absent) > 5 else ""
         errors.append(
             f"{len(absent)} of {len(expected)} combination(s) have no child SKU "
-            f"— {shown}{more}. Every colour x size this product generates needs "
-            f"a line.")
+            f"— {shown}{more}. Every {' x '.join(names)} this product generates "
+            f"needs a line.")
 
     repeated = _repeated(row["combinations"])
     if repeated:
@@ -550,7 +774,21 @@ def parse_workbook(source: str | Path | Any, *, filename: str = "") -> ParseResu
             continue
 
         result.sheets.append(sheet)
-        mapping, unknown = _map_headers(rows[0])
+
+        # Phase 2's sheet is a different template answering a different
+        # question, so it is routed rather than forced through the product
+        # reader — which would reject every line of it as unrecognised columns.
+        # Imported here so the dependency runs one way: configurator imports
+        # this module's cell helpers, and this module reaches for it only when
+        # a sheet turns out to need it.
+        from app import configurator
+        if configurator.looks_like_configurator(rows[0]):
+            parsed_rows, sheet_errors = configurator.parse_sheet(sheet, rows)
+            result.errors.extend(sheet_errors)
+            result.rows.extend(parsed_rows)
+            continue
+
+        mapping, unknown, groups = _map_headers(rows[0])
 
         if "sku" not in mapping.values():
             result.errors.append(
@@ -561,7 +799,8 @@ def parse_workbook(source: str | Path | Any, *, filename: str = "") -> ParseResu
 
         variants = []
         for offset, values in enumerate(rows[1:], start=2):
-            variant = _read_variant(values, mapping, sheet=sheet, row_number=offset)
+            variant = _read_variant(values, mapping, sheet=sheet,
+                                    row_number=offset, groups=groups)
             if variant:
                 variants.append(variant)
 
@@ -573,14 +812,16 @@ def parse_workbook(source: str | Path | Any, *, filename: str = "") -> ParseResu
         parsed_rows = [_merge(group, unknown)
                        for group in _group_by_sku(variants).values()]
 
-        _check_attribute_columns(sheet, mapping, parsed_rows, result)
+        _check_attribute_columns(sheet, groups, parsed_rows, result)
+        for parsed in parsed_rows:
+            parsed.pop("_repaired", None)
         result.rows.extend(parsed_rows)
 
     workbook.close()
 
     duplicates = _duplicate_skus(result.rows)
     for row in result.rows:
-        if row["sku"] in duplicates:
+        if (row.get("kind") or "product", row["sku"]) in duplicates:
             row["errors"].append(
                 f"SKU {row['sku']!r} appears on more than one sheet — a product "
                 f"is one SKU, and its lines all belong on the same sheet")
@@ -611,45 +852,51 @@ def _group_by_sku(variants: list[dict]) -> dict[str, list[dict]]:
     return groups
 
 
-def _check_attribute_columns(sheet: str, mapping: dict[int, str],
+def _check_attribute_columns(sheet: str, groups: list[dict],
                              rows: list[dict], result: ParseResult) -> None:
-    """Is this sheet's size attribute actually named anywhere?
+    """Is every attribute this sheet uses actually named by a column?
 
-    The template carries the header "Product Attributes Type" TWICE — once for
-    the colour attribute and once for the size attribute — and they are told
-    apart by position, because they are spelled identically. That makes them
-    easy to get wrong and, until now, quiet about it: a missing second column
-    fell back to "Size" in silence, and a second column repeating "Color" made
-    the runner file every size as a colour.
+    "Product Attributes Type" is spelled identically for every attribute and
+    they are told apart by position, which makes them easy to get wrong and, in
+    the old parser, quiet about it: a missing second column fell back to "Size"
+    in silence, and a second column repeating "Color" made the runner file every
+    size as a colour.
 
     Reported once per sheet and in the user's vocabulary. The header they can
     search for is "Product Attributes Type"; "the size attribute column" names
     something that appears nowhere in their spreadsheet.
 
-    Only reported when the sheet actually uses sizes. A hard-hat sheet with an
-    empty Size column has no size attribute to name and nothing to fix.
+    Only for attributes the sheet actually fills. A hard-hat sheet with an empty
+    Size column has no size attribute to name and nothing to fix.
     """
-    if not any(row["sizes"] for row in rows):
-        return
+    for index, group in enumerate(groups):
+        used = [row for row in rows
+                if index < len(row["attributes"]) and row["attributes"][index]["values"]]
+        if not used:
+            continue
+        example = used[0]
+        label = group["label"] or f"attribute {index + 1}"
 
-    example = next(row for row in rows if row["sizes"])
-    if "size_attr" not in mapping.values():
-        result.sheet_warnings.append(
-            f"{sheet}: this sheet sets sizes (e.g. {example['sizes']} on "
-            f"{example['sku']}) but has only ONE 'Product Attributes Type' "
-            f"column. The template needs two: the first names the colour "
-            f"attribute, the second names the size attribute. Add a second "
-            f"'Product Attributes Type' column immediately before the Size "
-            f"column and put 'Size' in every row. Assuming 'Size' for now.")
-    elif any(SIZE_COLUMN_WRONG in row["warnings"] for row in rows):
-        wrong = sum(1 for row in rows if SIZE_COLUMN_WRONG in row["warnings"])
-        result.sheet_warnings.append(
-            f"{sheet}: the SECOND 'Product Attributes Type' column (the one "
-            f"just before Size) names the size attribute, but on {wrong} "
-            f"product(s) it repeats the colour attribute instead. Put 'Size' in "
-            f"that column on every row. Assuming 'Size' for now — left as it "
-            f"is, both attributes would share one name and every size would be "
-            f"added as a colour.")
+        if group["type_col"] is None:
+            result.sheet_warnings.append(
+                f"{sheet}: this sheet fills the {label!r} column (e.g. "
+                f"{example['attributes'][index]['values']} on {example['sku']}) "
+                f"but has no 'Product Attributes Type' column naming it. Add "
+                f"one immediately before the {label!r} column and put the "
+                f"attribute's name in every row. Assuming "
+                f"{group['default_name']!r} for now.")
+        elif any((row.get("_repaired") or {}).get(index) == SIZE_COLUMN_WRONG
+                 for row in used):
+            wrong = sum(1 for row in used
+                        if (row.get("_repaired") or {}).get(index) == SIZE_COLUMN_WRONG)
+            result.sheet_warnings.append(
+                f"{sheet}: the 'Product Attributes Type' column just before "
+                f"{label!r} should name that attribute, but on {wrong} "
+                f"product(s) it repeats an earlier one. Put the attribute's own "
+                f"name in that column on every row. Assuming "
+                f"{group['default_name']!r} for now — left as it is, two "
+                f"attributes would share one name and every {label} value would "
+                f"be added to the wrong one.")
 
 
 def _unique(values) -> list[str]:
@@ -665,9 +912,17 @@ def _repeated(values: list[str]) -> list[str]:
     return [value for value in dict.fromkeys(values) if seen[value] > 1]
 
 
-def _duplicate_skus(rows: list[dict]) -> set[str]:
-    seen: dict[str, int] = {}
+def _duplicate_skus(rows: list[dict]) -> set[tuple[str, str]]:
+    """The (kind, SKU) pairs claimed by more than one row.
+
+    Counted PER KIND, because a product row and a configurator row naming the
+    same SKU are not a duplicate — they are phase 1 and phase 2 of the same
+    product, which is the normal way a workbook carrying both is written.
+    Counting them together would fail every product the client configures.
+    """
+    seen: dict[tuple[str, str], int] = {}
     for row in rows:
         if row["sku"]:
-            seen[row["sku"]] = seen.get(row["sku"], 0) + 1
-    return {sku for sku, count in seen.items() if count > 1}
+            key = (row.get("kind") or "product", row["sku"])
+            seen[key] = seen.get(key, 0) + 1
+    return {key for key, count in seen.items() if count > 1}

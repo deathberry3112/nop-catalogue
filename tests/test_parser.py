@@ -70,10 +70,13 @@ def test_the_sheet_states_which_child_sku_pairs_with_which_combination():
     """The whole point of the template change. Nothing is inferred from the
     child SKU text any more — the line says what it belongs to."""
     result = parse_workbook(_workbook(_product(sizes=("S", "M"))))
-    assert result.rows[0]["variants"][:2] == [
-        {"color": "Red", "size": "S", "sku": "SKU-1 RES", "source_row": 2},
-        {"color": "Red", "size": "M", "sku": "SKU-1 REM", "source_row": 3},
-    ]
+    variants = result.rows[0]["variants"][:2]
+    # `values` is the general statement — every attribute the line names, by
+    # attribute name. `color`/`size` are the colour view of the same thing.
+    assert [v["values"] for v in variants] == [
+        {"Color": "Red", "Size": "S"}, {"Color": "Red", "Size": "M"}]
+    assert [(v["color"], v["size"], v["sku"], v["source_row"]) for v in variants] == [
+        ("Red", "S", "SKU-1 RES", 2), ("Red", "M", "SKU-1 REM", 3)]
 
 
 def test_the_grouping_key_is_the_sku_not_the_product_name():
@@ -147,7 +150,7 @@ def test_a_sheet_in_the_old_format_is_refused_not_misread():
     result = parse_workbook(_workbook([legacy]))
     assert result.rows == []
     assert "OLD template" in result.errors[0]
-    assert "2 colours" in result.errors[0] and "2 child SKUs" in result.errors[0]
+    assert "2 colors" in result.errors[0] and "2 child SKUs" in result.errors[0]
 
 
 def test_the_refusal_names_the_row_so_it_can_be_found():
@@ -233,7 +236,7 @@ def test_a_product_half_with_sizes_and_half_without_is_refused():
     lines = [_line(color="Red", size="S", combo="SKU-1 RD S"),
              _line(color="Blue", size="", combo="SKU-1 BE")]
     result = parse_workbook(_workbook(lines))
-    assert any("sizes on every line or on none" in e
+    assert any("sets an attribute on every line or on none" in e
                for e in result.rows[0]["errors"])
 
 
@@ -259,9 +262,13 @@ def test_generate_without_colours_is_refused():
     assert any("no child SKUs" in e for e in result.rows[0]["errors"])
 
 
-def test_a_child_sku_with_no_colour_is_refused():
+def test_a_child_sku_with_no_attribute_values_is_refused():
+    """A child SKU that belongs to no combination cannot be placed. The message
+    names the empty columns rather than assuming the missing one is colour."""
     result = parse_workbook(_workbook([_line(color="", combo="SKU-1 RD")]))
-    assert any("no colour" in e for e in result.rows[0]["errors"])
+    errors = result.rows[0]["errors"]
+    assert any("no attribute values are listed" in e for e in errors)
+    assert any("Color" in e for e in errors)
 
 
 def test_a_clean_product_carries_no_duplicate_payload():
@@ -303,8 +310,8 @@ def test_a_sheet_with_only_one_attribute_column_is_told_to_add_the_second():
     result = parse_workbook(_workbook(lines, headers=headers))
     assert result.rows[0]["size_attr"] == "Size"
     note = result.sheet_warnings[0]
-    assert "only ONE 'Product Attributes Type'" in note
-    assert "before the Size column" in note
+    assert "no 'Product Attributes Type' column naming it" in note
+    assert "before the 'Size' column" in note
 
 
 def test_a_sheet_without_sizes_is_not_nagged_about_a_size_attribute():

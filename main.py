@@ -80,7 +80,8 @@ DEFAULT_PAYLOAD = ROOT / "parsed_rows.json"
 # one up when the user re-uploads a previous run's report (xlsxCreator writes the
 # Status column; the app carries it into each row's `status`). Kept in sync with
 # xlsxCreator.DONE_STATUSES.
-DONE_STATUSES = {"added", "done", "success", "complete", "skipped"}
+DONE_STATUSES = {"added", "done", "success", "complete", "skipped",
+                 "configured"}
 
 
 class ConfigError(Exception):

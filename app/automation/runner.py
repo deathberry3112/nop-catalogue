@@ -39,9 +39,11 @@ from typing import Any, Callable
 
 import combination_skus
 import library
+from app import configurator as app_configurator
 from app.colour import resolve as resolve_colours
-from app.colour import swatches_for_row
+from app.colour import swatches_for_row, swatches_for_values
 from app.errors import ErrorClass, classify
+from pages.configurator_page import ConfiguratorPage
 from pages.landing_page import LandingPage
 from pages.manage_products import ManageProductsPage
 from pages.product_page import ProductPage
@@ -147,10 +149,9 @@ def mismatch_message(report: dict, row: dict) -> str:
     useless.
     """
     known: dict[str, set[str]] = {}
-    known.setdefault(row.get("color_attr") or "Color", set()).update(
-        c.casefold() for c in row.get("colors") or [])
-    known.setdefault(row.get("size_attr") or "Size", set()).update(
-        s.casefold() for s in row.get("sizes") or [])
+    for attribute in attributes_of(row):
+        known.setdefault(attribute["name"], set()).update(
+            str(v).casefold() for v in attribute["values"])
 
     unmatched = report.get("unmatched") or []
     missing = list(report.get("missing") or [])
@@ -188,29 +189,57 @@ def mismatch_message(report: dict, row: dict) -> str:
     return "combinations do not line up — " + ". Also, ".join(parts)
 
 
-def _resolve_swatches(product, colour_id: str, row: dict
-                      ) -> tuple[dict, list[str], dict]:
-    """({colour: swatch id}, ["Colour — why not"], what to record about it).
+def attributes_of(row: dict) -> list[dict]:
+    """The attributes this row configures, in sheet order.
 
-    Driven by the sheet's Color Swatch column; see app.colour.swatch. A row that
-    leaves that column blank gets no swatches and says nothing about it — the
-    third element comes back empty, and the console prints nothing rather than
-    a line saying nothing happened.
+    A row parsed from a workbook carries them outright. One loaded from JSON —
+    a checked-in payload, an old report — predates general attributes and speaks
+    colours and sizes, so the same shape is derived from those. Both come out
+    in the order combination_skus.attribute_names() keys on, which is what makes
+    the combination lookup match.
+    """
+    attributes = [a for a in (row.get("attributes") or []) if a.get("values")]
+    if attributes:
+        return attributes
+
+    derived: list[dict] = []
+    if row.get("colors"):
+        derived.append({"name": row.get("color_attr") or "Color",
+                        "values": list(row["colors"]),
+                        "swatches": list(row.get("swatches") or []),
+                        "is_colour": True})
+    if row.get("sizes"):
+        derived.append({"name": row.get("size_attr") or "Size",
+                        "values": list(row["sizes"]), "swatches": [],
+                        "is_colour": False})
+    return derived
+
+
+def _resolve_swatches(product, attribute_id: str, row: dict, attribute: dict
+                      ) -> tuple[dict, list[str], dict]:
+    """({value: swatch id}, ["Value — why not"], what to record about it).
+
+    Driven by the sheet's "<Attribute> Swatch" column; see app.colour.swatch. An
+    attribute that has no such column gets no swatches and says nothing about it
+    — the third element comes back empty, and the console prints nothing rather
+    than a line saying nothing happened.
 
     Never raises, and that is the policy this encodes: a swatch is decoration on
     a product that is otherwise correct, so failing to find one must not fail the
     row. What could not be settled comes back named, with the reason, so the run
     reports it rather than leaving somebody to notice blanks on the storefront.
     """
-    if not row.get("swatches"):
+    if not attribute.get("swatches"):
         return {}, [], {}
-    options = product.swatch_options(colour_id)
+    options = product.swatch_options(attribute_id)
     if not options:
         # The sheet asked and this admin has no swatch field at all — stock
         # nopCommerce. Silence here reads as "no swatches were wanted", which
         # is the opposite of what happened, so the step says so once.
         return {}, [], {"swatches": [], "unavailable": True}
-    swatches, problems, outcomes = swatches_for_row(row, options)
+    swatches, problems, outcomes = swatches_for_values(
+        attribute["values"], attribute["swatches"], options,
+        scope=row.get("source_sheet"))
     return swatches, problems, ({"swatches": outcomes} if outcomes else {})
 
 
@@ -277,37 +306,46 @@ def _configure_attributes(page, products, product, row, store, row_id) -> dict:
     on screen.
     """
     tiers: dict[str, int] = {}
-    if not row.get("colors"):
+    attributes = attributes_of(row)
+    if not attributes:
         return tiers
 
-    colour_id = _retrying(store, row_id, "attribute_colour",
-                          lambda: product.add_attribute(row["color_attr"]))
+    # EVERY ATTRIBUTE THE SHEET DECLARES, in its own order — Color and Size for a
+    # vest, Sign Material and Sign Size for a sign board. Nothing here knows what
+    # any of them mean; add_attribute maps whatever the admin already offers
+    # under that name.
+    for index, attribute in enumerate(attributes):
+        name = attribute["name"]
+        if index:
+            # The value editor navigates away from the edit page, so each
+            # attribute after the first has to re-open the product.
+            page.goto(products.find_by_sku(row["sku"]))
 
-    # Which swatch each colour gets. Resolved against the dropdown the admin is
-    # actually offering, so nothing here can name a swatch that does not exist.
-    # A colour that cannot be resolved confidently is reported and left unset —
-    # never guessed. A missing swatch is cosmetic; the wrong one is a lie about
-    # the product, and it would be invisible until a customer saw it.
-    swatches, unresolved, detail = _resolve_swatches(product, colour_id, row)
-    if unresolved:
-        log.warning("%s: no swatch for %s", row["sku"], "; ".join(unresolved))
+        attribute_id = _retrying(
+            store, row_id, f"attribute_{index + 1}",
+            lambda: product.add_attribute(name),
+            detail={"attribute": name})
 
-    # Recorded on the step that does the work rather than as its own event:
-    # this is what happened to each colour, so it belongs beside the action it
-    # describes, and one entry per colour would otherwise push the run's
-    # narrative out of the event tail the console reads.
-    _retrying(store, row_id, "values_colour",
-              lambda: product.add_attribute_values(colour_id, row["colors"],
-                                                   swatches=swatches),
-              detail=detail,
-              detail_from=lambda report: _swatch_states(detail, report))
+        # Swatches, for the attributes that ask for them. Resolved against the
+        # dropdown the admin is actually offering, so nothing here can name a
+        # swatch that does not exist. A value that cannot be resolved
+        # confidently is reported and left unset — never guessed. A missing
+        # swatch is cosmetic; the wrong one is a lie about the product, and it
+        # would be invisible until a customer saw it.
+        swatches, unresolved, detail = _resolve_swatches(
+            product, attribute_id, row, attribute)
+        if unresolved:
+            log.warning("%s: no swatch for %s", row["sku"], "; ".join(unresolved))
 
-    if row.get("sizes"):
-        page.goto(products.find_by_sku(row["sku"]))
-        size_id = _retrying(store, row_id, "attribute_size",
-                            lambda: product.add_attribute(row["size_attr"]))
-        _retrying(store, row_id, "values_size",
-                  lambda: product.add_attribute_values(size_id, row["sizes"]))
+        # Recorded on the step that does the work rather than as its own event:
+        # this is what happened to each value, so it belongs beside the action
+        # it describes, and one entry per value would otherwise push the run's
+        # narrative out of the event tail the console reads.
+        _retrying(store, row_id, f"values_{index + 1}",
+                  lambda: product.add_attribute_values(
+                      attribute_id, attribute["values"], swatches=swatches),
+                  detail={"attribute": name, **detail},
+                  detail_from=lambda report: _swatch_states(detail, report))
 
     if not row.get("generate_combinations"):
         return tiers
@@ -317,17 +355,25 @@ def _configure_attributes(page, products, product, row, store, row_id) -> dict:
     # combinations we would then be unable to name — and the failure is the
     # client's data, not the browser's, so it should cost one second, not one
     # page load.
-    resolution = resolve_colours(row)
-    store.record_inference(resolution, row_id)
-    tiers = resolution.tier_counts
-    if resolution.used_llm:
-        store.event("colour codes resolved by model", row_id=row_id,
-                    data={"tiers": tiers, "codes": resolution.codes})
-    if not resolution.ok:
-        raise combination_skus.CombinationError(
-            resolution.error or "colours could not be resolved")
+    #
+    # Only where the product HAS a colour. The tiers exist to recover which
+    # colour a child SKU's code stands for; a sign board's child SKUs encode
+    # nothing of the sort, and the sheet states every pairing outright, so
+    # combination_map reads it and no tier runs.
+    codes = None
+    if row.get("colors"):
+        resolution = resolve_colours(row)
+        store.record_inference(resolution, row_id)
+        tiers = resolution.tier_counts
+        if resolution.used_llm:
+            store.event("colour codes resolved by model", row_id=row_id,
+                        data={"tiers": tiers, "codes": resolution.codes})
+        if not resolution.ok:
+            raise combination_skus.CombinationError(
+                resolution.error or "colours could not be resolved")
+        codes = resolution.codes
 
-    wanted = combination_skus.combination_map(row, resolution.codes)
+    wanted = combination_skus.combination_map(row, codes)
 
     page.goto(products.find_by_sku(row["sku"]))
     _retrying(store, row_id, "generate_combinations",
@@ -336,8 +382,7 @@ def _configure_attributes(page, products, product, row, store, row_id) -> dict:
     def apply() -> dict:
         report = product.apply_combination_skus(
             wanted,
-            colour_attribute=row["color_attr"],
-            size_attribute=row["size_attr"],
+            attributes=combination_skus.attribute_names(row),
             allow_out_of_stock=bool(row.get("allow_out_of_stock")),
         )
         if report["unmatched"] or report["missing"]:
@@ -347,6 +392,228 @@ def _configure_attributes(page, products, product, row, store, row_id) -> dict:
 
     _retrying(store, row_id, "combination_skus", apply)
     return tiers
+
+
+def _create_and_claim(page, products, row, store, row_id, *,
+                      base_url: str, owned: set) -> tuple[Any, tuple[str, str | None]]:
+    """Create the product `row` names, and record that this run made it.
+
+    The claim is the point of doing this in one place. `created_products` is the
+    only record that means "this run brought this product into existence" — it
+    is what the ownership guard reads on the next run and the ONLY thing
+    rollback will delete — so a product created by any path has to be claimed by
+    the same path that created it. A second creation site that forgot to claim
+    would leave a product nothing could clean up and the next run would treat as
+    the client's own.
+
+    Returns (the ProductPage, the (url, id) pair the caller records as `made`).
+    """
+    product = _retrying(store, row_id, "create", lambda: products.add_new())
+
+    def save() -> None:
+        product.fill_basics(row).save()
+        if not product.is_saved():
+            raise library.StepError(
+                f"saved but no product id: {page.url}", step="save")
+
+    _retrying(store, row_id, "save", save)
+    store.claim_product(base_url, row["sku"], page.url, product.product_id)
+    _record_local(row["sku"], page.url)
+    owned.add(row["sku"])
+    return product, (page.url, product.product_id)
+
+
+def _run_configurator(page, products, row, store, row_id,
+                      existing: str | None, *, commit: bool,
+                      created: bool = False) -> dict:
+    """One phase-2 row: put the workbook's locations and areas on the product.
+
+    THE OWNERSHIP GUARD DOES NOT APPLY HERE, and that is a deliberate exception
+    worth being explicit about. Everywhere else a SKU this automation did not
+    create is left untouched, because the harm being prevented is bringing a
+    product into a client's catalogue — or editing one — that nobody asked for.
+    Phase 2 is the opposite case by construction: the workbook names products
+    that already exist precisely so their configurator can be filled in, and
+    every product in the shipped sheet is one the client made themselves.
+    Applying the guard would skip all of them and do nothing.
+
+    What keeps that safe is that this path is additive and narrow. It adds
+    locations and areas; it never edits a product field, an attribute, a price
+    or a combination, and there is no code path here that can. A location that
+    already exists under a different Picario reference is refused rather than
+    repointed, and an area already on a spot is left as it is.
+
+    A SKU THAT IS NOT IN THE CATALOGUE IS CREATED, by run_batch, before this
+    runs — `created` says whether that happened. The product it makes is a bare
+    one: the configurator sheet carries a name and a SKU and nothing else, so
+    that is all it can fill, and phase 1 remains the only place a product gets
+    its specification, attributes and combinations. What this buys is that a
+    configurator row no longer needs phase 1 to have run first; what it costs is
+    that a typo'd SKU becomes a new product rather than an error, which is why
+    the product is claimed on creation and so can be rolled back like any other.
+    """
+    sku = row["sku"]
+
+    if not commit:
+        if not existing:
+            # Nothing to open: the configurator tab lives on a product, so a
+            # product that does not exist yet cannot have its references or
+            # thumbnails checked. Saying that is better than implying the
+            # rehearsal covered them.
+            store.event(f"{sku} does not exist — would be created, then configured",
+                        row_id=row_id)
+            store.row_finished(row_id, status="previewed")
+            return {"sku": sku, "kind": "configurator", "error": None,
+                    "status": "Pending", "url": None,
+                    "detail": {"would_create": True,
+                               "locations": [l["name"] for l in row["locations"]],
+                               "checked": "nothing yet — the product does not exist"}}
+
+        page.goto(existing)
+        detail = _preview_configurator(page, products, row, store, row_id)
+        store.row_finished(row_id, status="previewed", product_url=existing)
+        return {"sku": sku, "kind": "configurator", "error": None,
+                "status": "Pending", "url": existing, "detail": detail}
+
+    page.goto(existing)
+    detail = _configure_areas(page, products, row, store, row_id)
+    detail["created_product"] = created
+    store.event(
+        f"{'created and configured' if created else 'configured'} "
+        f"{len(detail['locations'])} location(s): {detail['added']} area(s) "
+        f"added, {detail['kept']} already set", row_id=row_id, data=detail)
+    store.row_finished(row_id, status="added" if created else "resumed",
+                       product_url=existing)
+    return {"sku": sku, "kind": "configurator", "error": None,
+            "status": "Configured", "url": existing, "detail": detail}
+
+
+def _configure_areas(page, products, row, store, row_id) -> dict:
+    """The configurator locations and areas for one phase-2 row.
+
+    Each location is created (or found) and then filled with its areas, one
+    location at a time, because the Picario scene that names a location's areas
+    only arrives once that location has been saved.
+    """
+    configurator = ConfiguratorPage(page).open()
+    done: list[dict] = []
+    problems: list[str] = []
+    swapped: list[dict] = []      # locations that needed an alternative reference
+
+    for location in row.get("locations") or []:
+        name, reference = location["name"], location["reference_id"]
+        wanted = [(area["picario_name"], area["thumbnail"])
+                  for area in location["areas"]]
+        spots = tuple(area["picario_name"] for area in location["areas"])
+        alternatives = tuple(app_configurator.reference_alternatives(reference))
+        try:
+            location_id, used = _retrying(
+                store, row_id, "configurator_location",
+                lambda: configurator.ensure_location(
+                    name, reference, spots=spots, alternatives=alternatives),
+                detail={"location": name, "reference_id": reference,
+                        "alternatives": list(alternatives)})
+
+            if used != reference:
+                # Never silent. The run worked, but the workbook is wrong, and
+                # an alternative that quietly keeps working is a sheet nobody
+                # ever fixes.
+                swapped.append({"location": name, "sheet": reference, "used": used})
+                log.warning("%s: %s used %r, not the workbook's %r",
+                            row["sku"], name, used, reference)
+                store.event(
+                    f"location {name!r}: the workbook's Picario RefrenceId "
+                    f"{reference!r} has no {list(spots)}, so this run used "
+                    f"{used!r}, which does — correct the sheet",
+                    level="warn", row_id=row_id,
+                    data={"location": name, "sheet": reference, "used": used})
+
+            report = _retrying(
+                store, row_id, "configurator_areas",
+                lambda: configurator.ensure_areas(location_id, wanted),
+                detail={"location": name, "areas": [w[0] for w in wanted]})
+        except Exception as exc:
+            # ONE BAD LOCATION MUST NOT COST THE OTHER THREE. Locations are
+            # independent — a different Picario scene, its own spots — so a
+            # workbook that names one wrong scene should still configure the
+            # rest and then say exactly which one it could not do. The row
+            # still fails at the end; it just fails having done the work it
+            # could, which is the same bargain run_batch already strikes when
+            # one row of a batch fails.
+            #
+            # Only for DETERMINISTIC failures. A dead session or a timeout is
+            # not this location's problem, it is the run's, and carrying on
+            # would just collect the identical error three more times.
+            if classify(exc).retryable:
+                raise
+            log.error("%s: location %r failed: %s", row["sku"], name, exc)
+            store.event(f"location {name!r} could not be configured: {exc}",
+                        level="error", row_id=row_id,
+                        data={"location": name, "reference_id": reference})
+            problems.append(f"{name} — {exc}")
+            continue
+        done.append({"location": name, "location_id": location_id, **report})
+
+    result = {"locations": done,
+              "added": sum(len(d["added"]) for d in done),
+              "kept": sum(len(d["kept"]) for d in done),
+              "failed_locations": problems,
+              "reference_swaps": swapped}
+
+    if problems:
+        # Recorded before raising, so a partly-configured product explains
+        # itself instead of going quiet at the moment it becomes interesting.
+        store.event(f"configured {len(done)} of {len(done) + len(problems)} "
+                    f"location(s)", level="warn", row_id=row_id, data=result)
+        raise library.StepError(
+            f"{len(problems)} of {len(done) + len(problems)} location(s) could "
+            f"not be configured ({'; '.join(problems)}). The other "
+            f"{len(done)} were done.", step="configurator")
+
+    return result
+
+
+def _preview_configurator(page, products, row, store, row_id) -> dict:
+    """A dry run of one configurator row: everything except creating anything.
+
+    It checks, in the order the things actually go wrong:
+
+      * every Picario reference the row names, against Picario itself
+      * every thumbnail, against what this store offers
+      * any location that already exists under a different reference
+
+    What it CANNOT check is the Picario Names, and that limit is worth stating
+    plainly rather than papering over: a scene only lists its areas once a
+    location referencing it has been saved. So a preview proves the references
+    and the thumbnails are real, and stops there.
+    """
+    configurator = ConfiguratorPage(page).open()
+    existing = configurator.locations()
+    offered = set(configurator.thumbnails())
+    unknown: list[str] = []
+
+    for location in row.get("locations") or []:
+        for area in location["areas"]:
+            if area["thumbnail"] not in offered:
+                unknown.append(f"{area['thumbnail']} (row {area['source_row']})")
+
+    if unknown:
+        raise library.StepError(
+            f"this store has no thumbnail(s) {unknown} — check the Thumbnail "
+            f"Name column against the admin's list", step="configurator")
+
+    for location in row.get("locations") or []:
+        name, reference = location["name"], location["reference_id"]
+        if name in existing:
+            store.event(f"location {name!r} already exists — would be reused",
+                        row_id=row_id)
+            continue
+        with store.step(row_id, "validate_reference") as recorded:
+            recorded.update({"location": name, "reference_id": reference})
+            configurator.validate_reference(name, reference)
+
+    return {"locations": [l["name"] for l in row.get("locations") or []],
+            "checked": "references and thumbnails only"}
 
 
 def _preview_row(page, products, row, store, row_id, existing: str | None) -> dict:
@@ -424,6 +691,23 @@ def run_batch(page, rows, *, base_url: str, email: str, password: str,
             existing = _retrying(store, row_id, "lookup",
                                  lambda: products.find_by_sku(sku))
 
+            if row.get("kind") == "configurator":
+                # Phase 2 attaches to a product; if the sheet names one that is
+                # not here yet, make it. Deliberately BEFORE the ownership guard
+                # below and never subject to it — see _run_configurator.
+                if commit and not existing:
+                    _, made = _create_and_claim(
+                        page, products, row, store, row_id,
+                        base_url=base_url, owned=owned)
+                    created += 1
+                    existing = made[0]
+                    store.event(f"{sku} did not exist — created it to configure",
+                                row_id=row_id, data={"url": existing})
+                results.append(_run_configurator(
+                    page, products, row, store, row_id, existing,
+                    commit=commit, created=made is not None))
+                continue
+
             if existing and sku not in owned:
                 # Somebody else's product. Open nothing, change nothing.
                 if on_existing == "fail":
@@ -452,20 +736,9 @@ def run_batch(page, rows, *, base_url: str, email: str, password: str,
                 product = ProductPage(page)
                 outcome = "resumed"
             else:
-                product = _retrying(store, row_id, "create",
-                                    lambda: products.add_new())
-
-                def save() -> None:
-                    product.fill_basics(row).save()
-                    if not product.is_saved():
-                        raise library.StepError(
-                            f"saved but no product id: {page.url}", step="save")
-
-                _retrying(store, row_id, "save", save)
-                made = (page.url, product.product_id)
-                store.claim_product(base_url, sku, page.url, product.product_id)
-                _record_local(sku, page.url)
-                owned.add(sku)
+                product, made = _create_and_claim(
+                    page, products, row, store, row_id,
+                    base_url=base_url, owned=owned)
                 created += 1
                 outcome = "added"
 

@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
 
 import library
 
@@ -645,16 +645,17 @@ class ProductPage:
         raise library.StepError("generating combinations produced no rows",
                                 step="combinations")
 
-    def apply_combination_skus(self, wanted: dict[tuple[str, str | None], str], *,
-                               colour_attribute: str = "Color",
-                               size_attribute: str = "Size",
+    def apply_combination_skus(self, wanted: dict[tuple[str, ...], str], *,
+                               attributes: "Sequence[str]",
                                allow_out_of_stock: bool = False) -> dict:
         """Write each combination's SKU, matching on what the row actually is.
 
-        `wanted` is keyed by (colour, size) — size None for a product with no
-        sizes. Every row is identified by reading its own Attributes cell while
-        it is open for editing, so nothing depends on the order nopCommerce
-        generated them in, or on that order matching the payload.
+        `wanted` is keyed by a tuple of attribute values in `attributes` order —
+        ("Lime", "S/M") for a vest, ("Aluminum", "7 x 10") for a sign board,
+        ("White",) for a hard hat with no sizes. The caller gets that order from
+        combination_skus.attribute_names(), and this reads each generated row's
+        own Attributes cell to build the same tuple, so nothing depends on the
+        order nopCommerce generated them in or on that matching the payload.
 
         Returns {"set": [...], "unmatched": [...], "missing": [...]} rather than
         raising: the caller can decide whether a leftover row is fatal, and gets
@@ -662,11 +663,11 @@ class ProductPage:
         """
         self.open_tab("Product attributes")
         self.open_tab("Attribute combinations")
+        names = list(attributes)
 
-        def key_of(combination: dict) -> tuple[str | None, str | None]:
-            attributes = combination["attributes"]
-            return (attributes.get(colour_attribute),
-                    attributes.get(size_attribute) or None)
+        def key_of(combination: dict) -> tuple[str, ...]:
+            cells = combination["attributes"]
+            return tuple(str(cells.get(name) or "") for name in names)
 
         def needs_work(combination: dict) -> bool:
             key = key_of(combination)

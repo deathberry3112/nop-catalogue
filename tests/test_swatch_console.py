@@ -64,8 +64,17 @@ ROW = {"colors": ["Yellow", "Black", "Teal"],
 
 
 def seed(row=ROW, options=OPTIONS):
-    """The detail a step is given before it runs."""
-    _, _, detail = runner._resolve_swatches(FakeProduct(options), "1", row)
+    """The detail a step is given before it runs.
+
+    Goes through attributes_of() exactly as the runner does, which also keeps a
+    colour/size shaped row (the kind a JSON payload carries) exercised now that
+    attributes are general.
+    """
+    attributes = runner.attributes_of(row)
+    attribute = attributes[0] if attributes else {
+        "name": "Color", "values": [], "swatches": [], "is_colour": True}
+    _, _, detail = runner._resolve_swatches(
+        FakeProduct(options), "1", row, attribute)
     return detail
 
 
@@ -78,8 +87,9 @@ def by_colour(detail):
 def test_a_row_that_asks_for_no_swatches_records_nothing():
     """Not an empty list — nothing. A console line saying zero swatches on
     every product is how the four that need a person get ignored."""
+    row = {"colors": ["Yellow"]}
     swatches, problems, detail = runner._resolve_swatches(
-        FakeProduct(OPTIONS), "1", {"colors": ["Yellow"]})
+        FakeProduct(OPTIONS), "1", row, runner.attributes_of(row)[0])
     assert (swatches, problems, detail) == ({}, [], {})
 
 
@@ -87,7 +97,7 @@ def test_an_admin_with_no_swatch_field_says_so_rather_than_going_quiet():
     """The sheet asked and this admin cannot answer. Silence here would read as
     'no swatches were wanted', which is the opposite of what happened."""
     swatches, problems, detail = runner._resolve_swatches(
-        FakeProduct([]), "1", ROW)
+        FakeProduct([]), "1", ROW, runner.attributes_of(ROW)[0])
     assert swatches == {} and problems == []
     assert detail == {"swatches": [], "unavailable": True}
 

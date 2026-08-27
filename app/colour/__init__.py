@@ -19,7 +19,8 @@ the catalogue — so it lives in its own module. See app/colour/swatch.py.
 """
 
 from app.colour.resolver import Resolution, Tier, resolve
-from app.colour.swatch import CAUSE, Choice, resolve_swatches, swatches_for_row
+from app.colour.swatch import (CAUSE, Choice, resolve_swatches,
+                               swatches_for_row, swatches_for_values)
 
 __all__ = ["Resolution", "Tier", "resolve", "CAUSE", "Choice",
-           "resolve_swatches", "swatches_for_row"]
+           "resolve_swatches", "swatches_for_row", "swatches_for_values"]

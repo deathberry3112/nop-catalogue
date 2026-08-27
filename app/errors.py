@@ -100,7 +100,13 @@ _PATTERNS: list[tuple[ErrorClass, re.Pattern]] = [
         r"resolved to 0 elements|strict mode violation", re.I)),
     (ErrorClass.CONFLICT, re.compile(r"claimed by|conflict|duplicate key", re.I)),
     (ErrorClass.DATA_INVALID, re.compile(
-        r"missing an 'sku'|is not a list|has no 'rows'|invalid row", re.I)),
+        r"missing an 'sku'|is not a list|has no 'rows'|invalid row|"
+        # phase 2: the workbook names something this store does not have. All
+        # deterministic — the reference, the spot and the thumbnail are facts
+        # about Picario and the catalogue, so a second attempt asks the same
+        # question and gets the same answer.
+        r"no product with sku|would not accept picario|no area named|"
+        r"has no thumbnail|no picario scene loaded", re.I)),
 ]
 
 
