@@ -165,7 +165,8 @@
               </th>
               <th></th><th>SKU</th><th>Product name</th><th>Sheet</th>
               <th>Spec</th><th class="num">Colours</th><th class="num">Sizes</th>
-              <th class="num">Combos</th><th>Problems</th>
+              <th class="num">Combos</th><th class="num">Locations</th>
+              <th>Problems</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -209,7 +210,7 @@
           <span class="pill" id="r-mode"></span>
           <span class="pill" id="r-status"></span>
           <a class="btn ghost" id="btn-report" href="#" hidden>Download report</a>
-          <button class="btn danger" id="btn-rollback" hidden>Delete created products</button>
+          <button class="btn danger" id="btn-rollback" hidden>Delete products&hellip;</button>
         </div>
       </div>
 
@@ -323,10 +324,12 @@
 
 <!-- rollback confirmation. Lists every product by name and lets the operator
      choose which of them go, because "the run half-worked" is the usual reason
-     anyone opens this. Nothing is armed until DELETE is typed. -->
+     anyone opens this. Nothing is armed until the confirmation phrase is typed,
+     and the phrase gets longer once the selection reaches a product this
+     automation did not create. -->
 <div class="modal-backdrop" id="rb-modal" hidden>
   <div class="modal wide">
-    <h3>Delete products this run created?</h3>
+    <h3>Delete products this run worked on?</h3>
 
     <!-- Only this scrolls. The title above and the buttons below stay put, so
          a long product list never pushes the confirm button off screen and the
@@ -341,13 +344,19 @@
 
       <p id="rb-intro" class="muted"></p>
 
-      <!-- Presets first: the three answers people actually want. The checkboxes
-           are the escape hatch, not the primary control. -->
+      <!-- Presets first: the answers people actually want. The checkboxes are
+           the escape hatch, not the primary control.
+
+           There is deliberately no "All" any more. The widest preset is
+           "Created by this automation"; a product the client created has to be
+           ticked by hand, because a one-click path to deleting somebody else's
+           catalogue is not a convenience worth having. -->
       <div class="rb-picker" id="rb-picker" hidden>
         <span class="rb-picker-label">Select</span>
         <button type="button" class="chip" data-pick="incomplete"
                 id="rb-pick-incomplete">Incomplete</button>
-        <button type="button" class="chip" data-pick="all">All</button>
+        <button type="button" class="chip" data-pick="ours"
+                id="rb-pick-ours">Created by this automation</button>
         <button type="button" class="chip" data-pick="none">None</button>
       </div>
 
@@ -360,8 +369,13 @@
     <!-- Outside the scroll area: the arming step and the buttons are one
          control, and hunting for the box you must type in is a bad way to
          start a deletion. -->
+    <!-- The last thing before the click, so it cannot be a group heading that
+         scrolled off the top of a long list. -->
+    <div class="alert error" id="rb-unowned-warning" hidden></div>
+
     <label class="field" id="rb-confirm-field">
-      <span class="field-label">Type <strong>DELETE</strong> to confirm</span>
+      <span class="field-label">Type
+        <strong id="rb-confirm-word">DELETE</strong> to confirm</span>
       <input id="rb-confirm" type="text" autocomplete="off" spellcheck="false"
              placeholder="DELETE">
     </label>

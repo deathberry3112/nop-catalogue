@@ -278,6 +278,10 @@ function renderPreview(keepSelection = false) {
       <td class="num">${r.colors?.length || 0}</td>
       <td class="num">${r.sizes?.length || 0}</td>
       <td class="num">${r.combinations?.length || 0}</td>
+      <!-- Phase 2, on a combined sheet. Zero for a product-only row, which is
+           most of them — but a sheet that carries locations and shows none here
+           was not read the way its author meant it. -->
+      <td class="num">${r.locations?.length || 0}</td>
       <td>${problems.length
             ? problems.map((e) => `<div class="${r.errors?.includes(e)
                 ? 'pill bad' : 'pill warn'}">${esc(e)}</div>`).join(' ')
@@ -406,7 +410,51 @@ let rbChosen = new Set();
    finished configuring is the one people came here to delete. Deleting one
    that worked is a bigger claim, so it lives in its own group and is never
    preselected. */
-const rbUnfinished = (p) => p.row_status === 'failed';
+const rbUnfinished = (p) => p.origin === 'created' && p.row_status === 'failed';
+
+/* The run can now delete products it did not create — ones an earlier run made
+   and this one edited, and ones the CLIENT made that this run only looked up.
+   The server sends the provenance per product (`origin`, and `owned` as its
+   summary) precisely so this dialog can stop presenting them as one list: the
+   consequence of deleting them is different, so the question has to be too.
+
+   Order is severity, first match wins, and every group is collapsed into one
+   of these — a product with no group would be deletable without being shown,
+   which is the one bug this screen cannot be allowed to have. */
+const RB_TIERS = [
+  { pick: 'incomplete', cls: 'warn', is: rbUnfinished,
+    label: 'Created by this run — never finished configuring',
+    why: 'the run created it and then failed part-way through' },
+  { pick: 'ours', cls: 'ok', is: (p) => p.origin === 'created',
+    label: 'Created by this run',
+    why: 'this run brought it into existence; deleting it undoes that' },
+  { pick: 'ours', cls: 'warn', is: (p) => p.origin === 'resumed',
+    label: 'Created by an earlier run — edited by this one',
+    why: 'deleting it undoes the earlier run’s creation too, not just this '
+       + 'run’s edits' },
+  { pick: 'other', cls: 'warn', is: (p) => p.origin === 'unclaimed',
+    label: 'Edited by this run — but nothing proves we created it',
+    why: 'the run wrote to it, yet no ownership record backs that up. It may '
+       + 'not be ours to delete' },
+  { pick: 'other', cls: 'bad', is: (p) => p.origin === 'foreign',
+    label: 'The client’s own — never touched by this run',
+    why: 'the run found it by SKU and deliberately left it alone. This '
+       + 'automation did not create it and cannot recreate it' },
+];
+
+const rbGroupOf = (p) => RB_TIERS.find((g) => g.is(p));
+
+/* How many of the ticked products this automation cannot show it created. The
+   arming step keys off this, so it is the number that decides whether typing
+   DELETE is enough. */
+const rbUnownedChosen = () => !rbPlan ? []
+  : rbPlan.products.filter((p) => rbChosen.has(p.sku) && !p.owned);
+
+/* A second, deliberately more awkward confirmation phrase for a selection that
+   reaches outside what the automation made. Nobody types this by reflex, which
+   is the entire point — the first phrase is for undoing our own work and this
+   one is for deleting somebody else's. */
+const rbWord = () => rbUnownedChosen().length ? 'DELETE NOT OURS' : 'DELETE';
 
 $('#btn-rollback').addEventListener('click', async () => {
   rbPlan = null;
@@ -416,7 +464,7 @@ $('#btn-rollback').addEventListener('click', async () => {
   $('#rb-excluded').hidden = true;
   $('#rb-picker').hidden = true;
   $('#rb-groups').innerHTML =
-    '<div class="rb-list"><div class="rb-row muted">Working out what this run created…</div></div>';
+    '<div class="rb-list"><div class="rb-row muted">Working out what this run worked on…</div></div>';
   $('#rb-modal').hidden = false;
   syncRbArm();
 
@@ -454,45 +502,61 @@ $('#btn-rollback').addEventListener('click', async () => {
 
   rbPlan = plan;
   const unfinished = plan.products.filter(rbUnfinished);
+  const unowned = plan.products.filter((p) => !p.owned);
 
   /* Preselect the NARROWEST plausible set, never the widest: what the run left
      unfinished, or nothing at all when it finished everything. A destructive
      dialog that opens with every box ticked is one stray Enter from a very bad
-     afternoon. */
+     afternoon — and now that the list can contain products the client created,
+     it would be one stray Enter from an unrecoverable one. */
   rbChosen = new Set(unfinished.map((p) => p.sku));
 
   $('#rb-confirm-field').hidden = false;
   $('#rb-picker').hidden = false;
   $('#rb-pick-incomplete').disabled = !unfinished.length;
+  $('#rb-pick-ours').disabled = !plan.products.some((p) => p.owned);
+
+  /* Leads with the count nothing can undo. "This run worked on 12 products" is
+     true and useless; "4 of these were not created by this automation" is the
+     sentence that changes what somebody does next. */
   $('#rb-intro').innerHTML =
-    `This run created <strong>${plan.count}</strong> product(s)`
+    `This run worked on <strong>${plan.count}</strong> product(s)`
     + (unfinished.length
-        ? `, <strong>${unfinished.length}</strong> of which it never finished configuring. `
-        : `, all of them fully configured. `)
-    + `Products it resumed, skipped or only previewed are not listed, and cannot
-       be deleted from here.`;
+        ? `, <strong>${unfinished.length}</strong> of which it created and never
+           finished configuring. `
+        : `. `)
+    + (unowned.length
+        ? `<strong class="rb-danger">${unowned.length}
+           ${unowned.length === 1 ? 'of them was' : 'of them were'} not created
+           by this automation</strong> — deleting
+           ${unowned.length === 1 ? 'it' : 'those'} removes catalogue data
+           nothing here can put back.
+           ${unowned.length === 1 ? 'It is listed separately below and is not'
+                                  : 'They are grouped separately below and none'
+                                    + ' of them is'} preselected. `
+        : `All of them were created by this automation. `)
+    + `Rows this run only previewed are not listed.`;
 
   renderRbGroups();
 });
 
-/* Grouped, not one flat list: "which of these actually worked" is the question
-   the operator is answering, so the answer is the structure. */
+/* Grouped, not one flat list: "whose product is this, and did the run finish
+   with it" are the questions the operator is answering, so the answers are the
+   structure. The group heading carries the consequence once, rather than every
+   row repeating it. */
 function renderRbGroups() {
   if (!rbPlan) return;
-  const buckets = [
-    ['Incomplete — created, never finished', 'warn',
-     rbPlan.products.filter(rbUnfinished)],
-    ['Complete — fully configured by this run', 'ok',
-     rbPlan.products.filter((p) => !rbUnfinished(p))],
-  ];
+  const buckets = RB_TIERS.map((g) => (
+    [g, rbPlan.products.filter((p) => rbGroupOf(p) === g)]));
 
-  $('#rb-groups').innerHTML = buckets.map(([label, cls, items]) => (
+  $('#rb-groups').innerHTML = buckets.map(([g, items]) => (
     !items.length ? '' : `<section class="rb-group">
       <h4 class="rb-group-title">
-        <span class="pill ${cls}">${esc(label)}</span>
+        <span class="pill ${g.cls}">${esc(g.label)}</span>
         <span class="muted">${items.length}</span>
       </h4>
-      <div class="rb-list ${cls}">${items.map(rbRow).join('')}</div>
+      <p class="rb-group-why">${esc(g.why)}</p>
+      <div class="rb-list ${g.cls}">${items.map(rbRow).join('')}</div>
     </section>`)).join('');
 
   syncRbArm();
@@ -502,8 +566,12 @@ function renderRbGroups() {
    stays keyboard-reachable — which matters more on this dialog than on any
    other screen in the app. */
 function rbRow(p) {
-  const note = p.row_status === 'failed' ? 'the run failed after creating it'
-             : p.row_status === 'added' ? ''
+  /* The group heading already said whose it is and what deleting it costs, so
+     the row only adds what is specific to this product — which for most of
+     them is nothing. */
+  const note = p.row_status === 'failed' && p.origin === 'created' ? ''
+             : p.row_status === 'added' || p.row_status === 'resumed' ? ''
+             : p.row_status === 'skipped' ? 'never opened by this run'
              : `row status: ${p.row_status || 'not recorded'}`;
   /* Only ever an http(s) link. The URL comes from our own store, but this is
      an anchor in a delete dialog and the check costs one line. */
@@ -528,12 +596,16 @@ $('#rb-groups').addEventListener('change', (e) => {
   syncRbArm();
 });
 
+/* Presets, deliberately without a one-click "everything". 'ours' is the widest
+   preset that stays inside what the automation made; reaching the client's
+   products takes ticking them, which is the friction those rows are worth. */
 $('#rb-picker').addEventListener('click', (e) => {
   const chip = e.target.closest('[data-pick]');
   if (!chip || !rbPlan) return;
+  const pick = chip.dataset.pick;
   rbChosen = new Set(
-    chip.dataset.pick === 'all' ? rbPlan.products.map((p) => p.sku)
-    : chip.dataset.pick === 'none' ? []
+    pick === 'none' ? []
+    : pick === 'ours' ? rbPlan.products.filter((p) => p.owned).map((p) => p.sku)
     : rbPlan.products.filter(rbUnfinished).map((p) => p.sku));
   renderRbGroups();
 });
@@ -544,21 +616,49 @@ function syncRbArm() {
   const go = $('#rb-go');
   const n = rbChosen.size;
   const total = rbPlan ? rbPlan.count : 0;
+  const theirs = rbUnownedChosen().length;
+  const word = rbWord();
 
   go.textContent = !n ? 'Delete'
+    : theirs ? `Delete ${n} product(s), ${theirs} not ours`
     : n === total ? `Delete ALL ${n} product(s)`
     : `Delete ${n} of ${total} product(s)`;
-  go.disabled = !(rbPlan && n && $('#rb-confirm').value === 'DELETE');
+  go.disabled = !(rbPlan && n && $('#rb-confirm').value === word);
+  go.classList.toggle('rb-armed-unowned', Boolean(theirs));
+
+  /* The phrase to type changes with the selection, so the label has to move
+     with it — an arming step that silently stops matching what is on screen
+     reads as a broken button, and people retype rather than re-read. */
+  $('#rb-confirm-word').textContent = word;
+  $('#rb-confirm').placeholder = word;
 
   /* The sentence reads "<span> removed from…", so the span carries its own
      verb — otherwise the markup has to guess at the plural. */
   $('#rb-count').textContent = !n ? 'The selected products are'
     : n === 1 ? 'One selected product is'
     : `${n} selected products are`;
+
+  /* Said next to the button, not only in a group heading scrolled off the top
+     of a long list. This is the last thing before the click. */
+  const warn = $('#rb-unowned-warning');
+  warn.hidden = !theirs;
+  if (theirs) {
+    warn.innerHTML = theirs === 1
+      ? `<strong>One of the selected products was not created by this
+         automation.</strong> Deleting it removes one of the client’s own
+         catalogue entries, along with its attributes and combinations.
+         Nothing here can restore it.`
+      : `<strong>${theirs} of the selected products were not created by this
+         automation.</strong> Deleting them removes the client’s own catalogue
+         entries, along with their attributes and combinations. Nothing here
+         can restore them.`;
+  }
 }
 
-/* Typing DELETE is the arming step. Deliberately exact — a case-insensitive
-   match would arm on "delete", which people type by reflex. */
+/* Typing the phrase is the arming step. Deliberately exact — a case-insensitive
+   match would arm on "delete", which people type by reflex. A selection that
+   reaches outside what the automation made asks for a longer phrase, so the
+   reflex is not enough on its own. */
 $('#rb-confirm').addEventListener('input', syncRbArm);
 
 $('#rb-cancel').addEventListener('click', () => { $('#rb-modal').hidden = true; });
@@ -646,6 +746,16 @@ function showRollbackReport(report, untouched = 0) {
         this dialog and they will be the only ones listed.</p>`
     : '';
 
+  /* The half of the outcome that is not recoverable, stated as its own fact.
+     "7 deleted" is not what happened if two of the seven were the client's,
+     and a flat list of SKUs does not tell anyone which two. */
+  const theirs = report.unowned_deleted || [];
+  const unowned = !theirs.length ? ''
+    : `<p class="alert error"><strong>${theirs.length}
+         ${theirs.length === 1 ? 'of these was' : 'of these were'} not created
+         by this automation</strong> and cannot be restored from here:
+         <span class="mono">${theirs.map(esc).join(', ')}</span>.</p>`;
+
   $('#rb-report').innerHTML = total
     ? `<p class="rb-headline ${left ? 'warn' : ''}">
          ${left
@@ -653,6 +763,7 @@ function showRollbackReport(report, untouched = 0) {
               still in the catalogue.`
            : `<strong>${counts.deleted}</strong> product(s) removed from the catalogue.`}
        </p>
+       ${unowned}
        ${remainder}
        <div class="stats wide">${tiles}</div>
        ${groups}`
@@ -791,18 +902,22 @@ function renderRun(run) {
   $('#btn-report').hidden = run.status === 'running';
   $('#btn-report').href = `/api/runs/${run.id}/report`;
 
-  /* Only offered once the run has stopped and only when it could have created
-     something. A dry run has nothing to undo, and a live run's final set is
-     not knowable yet — the server refuses both, this just stops the button
-     from inviting it.
+  /* Only offered once the run has stopped and only when it touched something.
+     A dry run has nothing to undo, and a live run's final set is not knowable
+     yet — the server refuses both, this just stops the button from inviting
+     it.
 
-     'failed' counts as much as 'added': a row that saved the product and then
-     died configuring it is claimed, and deleting that orphan is the whole
-     reason this button exists. Gating on `added` alone hid it completely on
-     the one run that needed it most — every creation failing means added is 0
-     and the products are still there. */
+     Every status the plan can reach, not just the creations. 'failed' counts
+     as much as 'added': a row that saved the product and then died configuring
+     it is claimed, and deleting that orphan is the whole reason this button
+     exists. Gating on `added` alone hid it completely on the one run that
+     needed it most — every creation failing means added is 0 and the products
+     are still there. 'resumed' and 'skipped' are here because the plan now
+     lists those too; leaving them out would hide the button on a run that
+     resumed everything and created nothing. */
   const c0 = run.counts || {};
-  const undoable = (c0.added || 0) + (c0.failed || 0);
+  const undoable = (c0.added || 0) + (c0.failed || 0)
+                 + (c0.resumed || 0) + (c0.skipped || 0);
   $('#btn-rollback').hidden = run.status === 'running' || !run.commit || !undoable;
 
   renderOrphanWarning(run);
@@ -833,11 +948,11 @@ function renderOrphanWarning(run) {
     ? `<strong>${known} half-configured product(s) are still in the catalogue.</strong>
        These rows created their product and then failed part-way through
        configuring it, so what is on the store is incomplete rather than
-       absent. Use <em>Delete created products</em> above — they are already
+       absent. Use <em>Delete products</em> above — they are already
        preselected in that dialog.`
     : `<strong>${failed.length} row(s) failed, and some may have left a
        half-configured product behind.</strong> A row that got as far as saving
-       created a real product before it failed. Open <em>Delete created
+       created a real product before it failed. Open <em>Delete
        products</em> above to see exactly which — they are listed under
        <em>Incomplete</em> and preselected.`;
 }

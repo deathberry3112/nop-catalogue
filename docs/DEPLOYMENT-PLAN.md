@@ -129,5 +129,5 @@ If the GitHub source is disconnected, deploys fall back to CLI / dashboard only.
 ## Platform rollback
 
 Redeploy an earlier deployment from the Railway dashboard. Catalogue undo (delete
-products this run created) is [`app/rollback.py`](../app/rollback.py), not a
+products this run worked on) is [`app/rollback.py`](../app/rollback.py), not a
 platform rollback.

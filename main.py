@@ -78,7 +78,7 @@ DEFAULT_PAYLOAD = ROOT / "parsed_rows.json"
 # Status column; the app carries it into each row's `status`). Kept in sync with
 # xlsxCreator.DONE_STATUSES.
 DONE_STATUSES = {"added", "done", "success", "complete", "skipped",
-                 "configured"}
+                 "configured", "added + configured"}
 
 
 class ConfigError(Exception):

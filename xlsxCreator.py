@@ -82,6 +82,11 @@ CONFIGURATOR_HEADERS = [
     "Save Product",
 ]
 
+#: A combined sheet's phase-2 columns, in order. The same list as
+#: CONFIGURATOR_HEADERS without the Product name and SKU it repeats — on a
+#: combined sheet those are already the first two columns of the product half.
+COMBINED_TAIL = CONFIGURATOR_HEADERS[2:]
+
 STATUS_ADDED = "Added"
 STATUS_FAILED = "Failed"
 STATUS_PENDING = "Pending"
@@ -90,7 +95,7 @@ STATUS_SKIPPED = "Skipped"
 # Row `status` values (e.g. carried in from a re-uploaded report) that mean
 # "already handled, don't add again". Kept in sync with main.py's DONE_STATUSES.
 DONE_STATUSES = {"added", "done", "success", "complete", "skipped",
-                 "configured"}
+                 "configured", "added + configured"}
 
 
 def _yn(value) -> str:
@@ -125,6 +130,52 @@ def configurator_to_lines(row: dict) -> list[list[str]]:
                 _yn(True),
                 _yn(row.get("save_product", True)),
             ])
+    return lines
+
+
+def combined_headers(row: dict) -> list[str]:
+    """A combined sheet's columns: the product template, then phase 2's.
+
+    `row` is the row the headers are taken from, exactly as template_headers
+    does it — one sheet of the upload has one set of columns.
+    """
+    return template_headers(row) + COMBINED_TAIL
+
+
+def combined_to_lines(row: dict, *, product_width: int) -> list[list[str]]:
+    """A combined row -> its lines, both phases on the same line.
+
+    THE TWO HALVES COUNT LINES DIFFERENTLY, which is the whole shape of this
+    template: phase 1 writes one line per variant and phase 2 one line per
+    area, so a product with seven sizes and four areas is seven lines of which
+    the first four also carry a location. Writing them zipped like this is what
+    makes the report re-uploadable as the same combined sheet — app.parser
+    reads each half independently and neither minds the other's blanks.
+
+    `product_width` comes from the sheet's header row rather than from this row,
+    so a phase-2-only row on a combined sheet lines its cells up with everybody
+    else's instead of with its own (empty) attribute list.
+    """
+    if row.get("kind") == "configurator":
+        # No product half to write. Its name and SKU still belong in the first
+        # two columns — they are the product this row configures.
+        product_lines: list[list[str]] = []
+        blank = [row.get("product_name", ""), row.get("sku", "")] +                 [""] * (product_width - 2)
+    else:
+        product_lines = row_to_lines(row)
+        blank = [""] * product_width
+
+    # configurator_to_lines writes Product name and SKU itself; on a combined
+    # sheet those columns are the product half's, so its copy is dropped.
+    area_lines = [line[2:] for line in configurator_to_lines(row)]
+    empty_tail = [""] * len(COMBINED_TAIL)
+
+    height = max(len(product_lines), len(area_lines)) or 1
+    lines = []
+    for index in range(height):
+        left = product_lines[index] if index < len(product_lines) else blank
+        right = area_lines[index] if index < len(area_lines) else empty_tail
+        lines.append(left + right)
     return lines
 
 
@@ -303,14 +354,27 @@ def write_report(rows: list[dict], summary: dict | None, output_path: str | Path
         # A sheet holds one kind of row, because it came from one sheet of the
         # upload — so the headers are decided once, per sheet, from what is in
         # it rather than per line.
-        configurator = any(r.get("kind") == "configurator" for r in sheet_rows)
+        # Three shapes, decided once per sheet. A COMBINED sheet is the one
+        # that carries both templates, and it is recognised by a product row
+        # that also has locations — a sheet of those may also hold a phase-2
+        # only row, so "any configurator row" cannot be the test.
+        combined = next((r for r in sheet_rows
+                         if r.get("locations") and r.get("kind") != "configurator"),
+                        None)
+        configurator = combined is None and any(
+            r.get("kind") == "configurator" for r in sheet_rows)
         # A product sheet's columns come from its own attributes, so a Sign
         # Boards sheet is written back as Sign Material and Sign Size rather
         # than forced into Color and Size. Taken from the first row: one sheet
         # of the upload has one set of columns, which is what made them
         # positional in the first place.
-        headers = (CONFIGURATOR_HEADERS if configurator
-                   else template_headers(sheet_rows[0]))
+        if combined is not None:
+            headers = combined_headers(combined)
+            product_width = len(template_headers(combined))
+        elif configurator:
+            headers = CONFIGURATOR_HEADERS
+        else:
+            headers = template_headers(sheet_rows[0])
         ws.append(headers + EXTRA_HEADERS)
         for row in sheet_rows:
             status, note = status_for(row, results_index)
@@ -318,8 +382,12 @@ def write_report(rows: list[dict], summary: dict | None, output_path: str | Path
             # did — five products added — and repeating the status down a
             # product's eight lines would make it read as forty.
             counts[status] = counts.get(status, 0) + 1
-            lines = (configurator_to_lines(row) if row.get("kind") == "configurator"
-                     else row_to_lines(row))
+            if combined is not None:
+                lines = combined_to_lines(row, product_width=product_width)
+            elif row.get("kind") == "configurator":
+                lines = configurator_to_lines(row)
+            else:
+                lines = row_to_lines(row)
             for cells in lines:
                 ws.append(cells + [status, note])
 

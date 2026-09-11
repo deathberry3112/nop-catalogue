@@ -88,7 +88,7 @@ Inventing records, acting before a readiness gate, breaking sticky state, bypass
 | Act before a gate | Commit while parser `errors` remain on the **batch passed to** `main.run`; generate combinations before colours resolve; rollback while `runs.status` is `running` |
 | Break ownership | Treat payload SKUs as “ours”; use name search instead of `find_by_sku`; lose `var/created-products.json` under concurrency; leave `deleted_at` set after recreating a SKU |
 | Bypass the runner | Call page objects from a new entry point that launches its own browser; use the stub in `main.resolve_runner` in production |
-| Conflate dual paths | `previewed` vs `skipped`; `/api/ping` vs `/api/health`; UI selected-rows commit vs `main.run` blocked-row refusal; `Credentials.from_env` default URL vs `settings().admin_base_url`; UI rollback button (`counts.added`) vs server plan (`created_products` including `failed`) |
+| Conflate dual paths | `previewed` vs `skipped`; `/api/ping` vs `/api/health`; UI selected-rows commit vs `main.run` blocked-row refusal; `Credentials.from_env` default URL vs `settings().admin_base_url`; UI rollback button (`counts.added + failed + resumed + skipped`) vs server plan (`run_rows` by status); rollback row `status` (what the run did) vs `origin` (whose product it is) |
 | Leak secrets | Serialise `Credentials` into a snapshot; put `DATABASE_URL` in a frontend doc; log the password (`LandingPage.login` logs email only — keep it that way) |
 | Silent wrong product | Unrecognised workbook column dropped; second “Product Attributes Type” repeating “Color” filing sizes as colours; `generate_combinations` clicked twice (nop **appends**) |
 | Retry a deterministic failure | Wrap colour resolution in `library.retry` instead of `runner._retrying` + `RETRY_POLICY` |
@@ -127,7 +127,6 @@ These are real holes, not implied coverage:
 - HTTP contract tests for `/api/health` (password absent), `/api/ping` (no DB I/O), `POST /api/runs` 400s, rollback confirmation mismatch → 409
 - `RunStore._safe` swallows remote errors and the run continues
 - In-memory `RunManager` does not reload finished runs from Postgres after restart
-- UI rollback button hidden when `counts.added == 0` even if claimed `failed` rows exist
 - `Credentials.from_env` default base URL vs empty `settings().admin_base_url`
 
 ## Docs sync checklist

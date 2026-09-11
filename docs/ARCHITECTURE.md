@@ -38,7 +38,7 @@ app/colour/             map / heuristic / LLM + swatches
 app/store/              Postgres client, RunStore, schema.sql
 app/automation/runner.py  run_batch — login, loop rows, skip/preview/create
 app/web/                FastAPI + RunManager + static console
-app/rollback.py         plan + execute deletion of this run's claims
+app/rollback.py         plan + execute deletion of this run's rows, by provenance
 pages/                  LandingPage, ManageProductsPage, ProductPage
 library.py              Playwright helpers (not flows)
 combination_skus.py     split/score/verify combination SKUs

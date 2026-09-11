@@ -138,6 +138,12 @@ SIZE_COLUMN_WRONG = ("the second 'Product Attributes Type' column should say "
 #: so has to agree across every line sharing a SKU — see _merge.
 VARIANT_FIELDS = ("colors", "sizes", "combinations")
 
+#: Columns the RUN writes back, not ones the user fills in. A line carrying
+#: nothing but these is not a variant: on a combined sheet, a report's phase-2
+#: only line has a Status and a Note and no product data at all, and reading it
+#: as a variant would answer one failed line with two failed rows.
+BOOKKEEPING_FIELDS = ("status", "note")
+
 #: Product-level fields, and how to name them when two lines disagree. The
 #: wording is what the user sees, so it names the column, not the field.
 SHARED_FIELDS: dict[str, str] = {
@@ -325,7 +331,8 @@ def _read_variant(values: tuple, mapping: dict[int, str], *, sheet: str,
             "has_swatch_column": group["swatch_col"] is not None,
         })
 
-    if not any(_text(v) for v in raw.values()) and not any(
+    if not any(_text(value) for field, value in raw.items()
+               if field not in BOOKKEEPING_FIELDS) and not any(
             a["values"] or a["swatches"] for a in attributes):
         return None
 
@@ -751,6 +758,126 @@ def _check_grid(row: dict) -> None:
             f"each combination takes its own")
 
 
+#: Headers that only the PRODUCT template has. One of these to the left of the
+#: configurator block is what tells a combined sheet from a phase-2 sheet, which
+#: also carries Product name and SKU.
+PRODUCT_ONLY_HEADERS = {
+    "attribute specification value", ATTRIBUTE_TYPE_HEADER,
+    "generate combinations", "allow out of stock",
+    "child sku varient", "child sku variant",
+} | set(IMPLIED_ATTRIBUTES)
+
+#: Columns a combined sheet's two halves BOTH read. Everything else is decided
+#: by which side of the boundary it falls on.
+SHARED_COMBINED_HEADERS = {"product name", "sku", "status", "note"}
+
+
+def _combined_boundary(header_row: tuple) -> int | None:
+    """Where phase 2's columns start on a combined sheet, or None if it is not one.
+
+    A phase-2 sheet also carries Product name and SKU, so the presence of
+    configurator columns is not enough: what makes a sheet COMBINED is product
+    columns to the LEFT of them.
+    """
+    from app import configurator
+
+    edge = configurator.block_starts_at(header_row)
+    if edge is None:
+        return None
+    left = {_norm(cell) for cell in header_row[:edge] if cell}
+    return edge if left & PRODUCT_ONLY_HEADERS else None
+
+
+def _mask(header_row: tuple, keep) -> tuple:
+    """The same header row with every column `keep` rejects blanked out.
+
+    Blanked rather than sliced so the indexes still line up with the worksheet's
+    cells — both readers then work on full-width lines and neither needs to know
+    the other exists.
+    """
+    return tuple(cell if keep(index, _norm(cell)) else None
+                 for index, cell in enumerate(header_row))
+
+
+def _parse_combined(sheet: str, worksheet_rows: list[tuple], edge: int,
+                    result: ParseResult) -> list[dict]:
+    """A sheet carrying BOTH templates -> one row per product, locations attached.
+
+    ONE ROW, NOT TWO, and that is the decision the rest of this follows from.
+    The alternative — a product row and a configurator row per SKU — would put
+    the two phases on separate lines of the report, so re-uploading it would no
+    longer be the combined template the user wrote. One row round-trips, runs
+    the phases in the only order that works (the configurator needs the product
+    to exist), and gives the console one line per product.
+
+    The two halves are read by the two readers that already exist, each shown
+    only its own columns. What they do NOT share is line granularity: phase 1
+    writes one line per variant and phase 2 one line per area, and a product
+    with seven sizes and four areas has seven lines of which four also say
+    something about a location. Neither reader is told about the other's blanks
+    — see configurator.parse_lines(require_location=True).
+    """
+    from app import configurator
+
+    header = worksheet_rows[0]
+    product_header = _mask(
+        header, lambda i, h: i < edge or h in SHARED_COMBINED_HEADERS)
+    configurator_header = _mask(
+        header, lambda i, h: i >= edge or h in SHARED_COMBINED_HEADERS)
+
+    mapping, unknown, groups = _map_headers(product_header)
+    if "sku" not in mapping.values():
+        result.errors.append(
+            f"{sheet}: no 'SKU' column — found {[str(c) for c in header if c]}")
+        return []
+    if unknown:
+        log.warning("%s: unrecognised column(s) %s", sheet, unknown)
+
+    variants = []
+    for offset, values in enumerate(worksheet_rows[1:], start=2):
+        variant = _read_variant(values, mapping, sheet=sheet,
+                                row_number=offset, groups=groups)
+        if variant:
+            variants.append(variant)
+
+    legacy = _detect_legacy_layout(sheet, variants)
+    if legacy:
+        result.errors.append(legacy)
+        return []
+
+    rows = [_merge(group, unknown) for group in _group_by_sku(variants).values()]
+    _check_attribute_columns(sheet, groups, rows, result)
+    for row in rows:
+        row.pop("_repaired", None)
+
+    configurator_rows, errors = configurator.parse_lines(
+        sheet, worksheet_rows, configurator_header, require_location=True)
+    result.errors.extend(errors)
+
+    by_sku = {row["sku"]: row for row in rows if row["sku"]}
+    for configured in configurator_rows:
+        product = by_sku.get(configured["sku"])
+        if product is None:
+            # Only reachable for a line with NO SKU, since the SKU column is
+            # shared and any line that fills it produces a product row to attach
+            # to. Kept as a phase-2 row so it fails on its own terms ("SKU is
+            # required") instead of disappearing — a line that says where a logo
+            # goes and never says on what is the kind of mistake a report has to
+            # name.
+            rows.append(configured)
+            continue
+        product["locations"] = configured["locations"]
+        # The configurator's own validation, carried onto the row that now owns
+        # the locations. Dropping it would let a location with no Picario
+        # reference through on a sheet that merely also creates the product.
+        product["errors"].extend(configured["errors"])
+        product["warnings"].extend(configured["warnings"])
+
+    log.info("%s: %d combined row(s), %d with locations", sheet, len(rows),
+             sum(1 for row in rows if row.get("locations")))
+    return rows
+
+
 def parse_workbook(source: str | Path | Any, *, filename: str = "") -> ParseResult:
     """Read every sheet of the workbook into rows.
 
@@ -781,6 +908,10 @@ def parse_workbook(source: str | Path | Any, *, filename: str = "") -> ParseResu
         # this module's cell helpers, and this module reaches for it only when
         # a sheet turns out to need it.
         from app import configurator
+        edge = _combined_boundary(rows[0])
+        if edge is not None:
+            result.rows.extend(_parse_combined(sheet, rows, edge, result))
+            continue
         if configurator.looks_like_configurator(rows[0]):
             parsed_rows, sheet_errors = configurator.parse_sheet(sheet, rows)
             result.errors.extend(sheet_errors)

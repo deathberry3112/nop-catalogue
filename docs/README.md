@@ -34,7 +34,7 @@ A narrative that disagrees with the invariants file or live code is wrong.
 This automation writes to a **production nopCommerce catalogue**. A wrong SKU, a silent column drop, or a delete of someone else’s product is expensive. The laws that follow from that:
 
 - Refuse a wrong catalogue with a clean report (unknown columns, unverified colour maps, guessed swatches).
-- Preview does not save. Commit is the only create. Rollback deletes only what **this run claimed**.
+- Preview does not save. Commit is the only create. Rollback deletes what **this run worked on** — including products it did not create; each one carries its `origin` and the dialog groups on it.
 - A SKU that exists and is **not ours** is skipped and never opened for edit.
 - LLM / heuristic output is a **proposal**. `combination_skus.combination_map` is the decision.
 - Telemetry (`DATABASE_URL`, run store) must never break product writes.

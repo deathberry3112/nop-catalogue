@@ -97,6 +97,32 @@ REQUIRED_HEADERS = {"location name"}
 REFERENCE_HEADERS = {"picario refrenceid", "picario referenceid",
                      "picario reference id"}
 
+#: Headers that belong to phase 2 and to nothing else. Their leftmost column is
+#: where the configurator block of a COMBINED sheet begins — see
+#: app.parser._parse_combined, which uses that index to decide which half of the
+#: sheet each reader owns. "Save" is not here on purpose: the product template
+#: has a "Save Product" of its own, and the combined sheet carries both, so a
+#: bare "Save" is only unambiguous once it is already past this boundary.
+CONFIGURATOR_ONLY_HEADERS = (NAVIGATION_HEADERS | REQUIRED_HEADERS
+                             | REFERENCE_HEADERS
+                             | {"picario name", "thumbnail name"})
+
+
+def block_starts_at(header_row: tuple) -> int | None:
+    """Index of the first phase-2 column, or None if this sheet has none.
+
+    A combined sheet is written as the product template followed by the
+    configurator one, exactly as the two "Product Attributes Type" columns and
+    the two "Save" columns are told apart: by position. So the boundary is a
+    column index, and everything about who owns which column follows from it —
+    including the duplicated "Save Product" header, whose first occurrence is
+    phase 1's and whose second is phase 2's, with no special case needed.
+    """
+    for index, cell in enumerate(header_row):
+        if _norm(cell) in CONFIGURATOR_ONLY_HEADERS:
+            return index
+    return None
+
 
 def looks_like_configurator(header_row: tuple) -> bool:
     """Is this worksheet the configurator template rather than the product one?
@@ -223,7 +249,23 @@ def parse_sheet(sheet: str, worksheet_rows: list[tuple]) -> tuple[list[dict], li
                 {"picario_name": "...", "thumbnail": "/thumbnails/....png",
                  "source_row": 2}]}]}
     """
-    header = worksheet_rows[0]
+    return parse_lines(sheet, worksheet_rows, worksheet_rows[0])
+
+
+def parse_lines(sheet: str, worksheet_rows: list[tuple], header: tuple, *,
+                require_location: bool = False) -> tuple[list[dict], list[str]]:
+    """parse_sheet, with the header row supplied and blank lines optionally skipped.
+
+    A COMBINED sheet hands in a header row with the product half masked out, so
+    that this reader sees only its own columns and reports none of phase 1's as
+    unrecognised.
+
+    `require_location` is the other half of that. On a combined sheet every line
+    carries a SKU — it is the product's line as well as the location's — so the
+    "is this line blank?" test in _read_line, which asks whether ANY mapped cell
+    is filled, would read a product's fifth size as a location with no name. A
+    line joins the configurator only if it says something about a location.
+    """
     mapping, unknown = map_headers(header)
     errors: list[str] = []
 
@@ -235,8 +277,11 @@ def parse_sheet(sheet: str, worksheet_rows: list[tuple]) -> tuple[list[dict], li
     lines = []
     for offset, values in enumerate(worksheet_rows[1:], start=2):
         line = _read_line(values, mapping, sheet=sheet, row_number=offset)
-        if line:
-            lines.append(line)
+        if not line:
+            continue
+        if require_location and not _says_anything_about_a_location(line):
+            continue
+        lines.append(line)
 
     # Grouped across the whole sheet rather than over consecutive runs, so a
     # product whose lines were split up still assembles. A line with no SKU
@@ -250,6 +295,16 @@ def parse_sheet(sheet: str, worksheet_rows: list[tuple]) -> tuple[list[dict], li
     rows = [_merge(group, unknown) for group in groups.values()]
     log.info("%s: %d product(s) from %d line(s)", sheet, len(rows), len(lines))
     return rows, errors
+
+
+#: The fields that make a line a LOCATION's line rather than a product's. SKU
+#: and product name are deliberately absent: on a combined sheet they are on
+#: every line, including the ones that are only a size.
+_LOCATION_FIELDS = ("location_name", "reference_id", "picario_name", "thumbnail")
+
+
+def _says_anything_about_a_location(line: dict) -> bool:
+    return any(line.get(field) for field in _LOCATION_FIELDS)
 
 
 def _merge(lines: list[dict], unknown_headers: list[str]) -> dict:

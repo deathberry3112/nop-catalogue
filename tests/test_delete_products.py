@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import pytest
 
+from app.store import RunStore
+from app.store.client import store_available
 from pages.landing_page import LandingPage
 from pages.manage_products import ManageProductsPage
 from pages.product_page import ProductPage
@@ -39,9 +41,36 @@ def cleanup_requested(request):
         pytest.skip("destructive — ask for it by name: pytest -m 'live and cleanup'")
 
 
+@pytest.fixture()
+def release_claim(admin_credentials):
+    """Retire the **Postgres** ownership claim as well as the JSON ledger entry.
+
+    Deleting a product without this leaves `created_products` saying the
+    automation still owns a SKU whose product is gone — and `owned_skus()`
+    filters on `deleted_at`, so that stale claim makes a later run treat the
+    SKU as ours. When somebody re-creates it, the run resumes and EDITS a
+    product this automation never made. That is not hypothetical: an audit on
+    2026-09-11 found 31 of 35 ownership records stale, 17 of them pointing at
+    SKUs that existed as somebody else's product.
+
+    `var/created-products.json` is this test's own ledger and the thing it
+    iterates; Postgres is the one production reads. Both have to be crossed
+    out, and only the HTTP rollback (`app/rollback.py` `_release`) was doing it.
+    """
+    store = RunStore("live-cleanup", remote=store_available())
+
+    def release(sku: str) -> None:
+        # _safe() swallows a missing or unreachable store: a cleanup run
+        # without Postgres configured must still delete and still pass.
+        store.release_product(admin_credentials.base_url, sku)
+
+    return release
+
+
 @pytest.mark.live
 @pytest.mark.cleanup
-def test_delete_products_this_automation_created(cleanup_requested, signed_in, created_ledger):
+def test_delete_products_this_automation_created(cleanup_requested, signed_in,
+                                                created_ledger, release_claim):
     """Delete every ledger entry, verify it is gone, then drop it from the ledger."""
     ledger = created_ledger.all()
     if not ledger:
@@ -57,6 +86,7 @@ def test_delete_products_this_automation_created(cleanup_requested, signed_in, c
         if not url:
             already_gone.append(sku)
             created_ledger.forget(sku)
+            release_claim(sku)          # the claim outlives the product otherwise
             continue
 
         try:
@@ -72,6 +102,7 @@ def test_delete_products_this_automation_created(cleanup_requested, signed_in, c
             product.delete()
             assert products.find_by_sku(sku) is None, f"{sku} is still in the catalogue"
             created_ledger.forget(sku)
+            release_claim(sku)          # part of the delete, not a tidy-up
             deleted.append(sku)
         except Exception as exc:
             failed.append((sku, str(exc)))

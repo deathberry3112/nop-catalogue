@@ -37,12 +37,14 @@ from typing import Any, Callable
 import combination_skus
 import library
 from app import configurator as app_configurator
+from app.automation import preflight
 from app.colour import resolve as resolve_colours
 from app.colour import swatches_for_row, swatches_for_values
 from app.errors import ErrorClass, classify
 from pages.configurator_page import ConfiguratorPage
 from pages.landing_page import LandingPage
 from pages.manage_products import ManageProductsPage
+from pages.product_attributes import ProductAttributesPage
 from pages.product_page import ProductPage
 
 log = logging.getLogger("automation.runner")
@@ -391,6 +393,30 @@ def _configure_attributes(page, products, product, row, store, row_id) -> dict:
     return tiers
 
 
+def _configure_combined_areas(page, products, row, store, row_id) -> dict | None:
+    """The phase-2 half of a combined row, once phase 1 has made the product.
+
+    A combined sheet is ONE row that does both phases, so this runs inside that
+    row rather than as a second row of its own. Ordering is why: the
+    configurator tab lives on a product, so it cannot be filled until the
+    product exists, and two rows would leave that to whatever order the batch
+    happened to be selected in.
+
+    Re-opens the product first. _configure_attributes finishes on the
+    combination grid, and ConfiguratorPage.open() clicks a tab on the edit page
+    — which is not the page the last step left behind.
+    """
+    if not row.get("locations"):
+        return None
+
+    page.goto(products.find_by_sku(row["sku"]))
+    detail = _configure_areas(page, products, row, store, row_id)
+    store.event(f"configured {len(detail['locations'])} location(s): "
+                f"{detail['added']} area(s) added, {detail['kept']} already set",
+                row_id=row_id, data=detail)
+    return detail
+
+
 def _create_and_claim(page, products, row, store, row_id, *,
                       base_url: str, owned: set) -> tuple[Any, tuple[str, str | None]]:
     """Create the product `row` names, and record that this run made it.
@@ -644,6 +670,12 @@ def _preview_row(page, products, row, store, row_id, existing: str | None) -> di
     if existing:
         store.event(f"{row['sku']} already exists — would be skipped or resumed",
                     row_id=row_id, data={"url": existing})
+        if row.get("locations"):
+            # A combined row whose product is already there. The configurator
+            # tab needs a saved product and now has one, so the references and
+            # thumbnails can be checked for real rather than described.
+            page.goto(existing)
+            _preview_configurator(page, products, row, store, row_id)
         return tiers
 
     with store.step(row_id, "fill_form"):
@@ -654,7 +686,63 @@ def _preview_row(page, products, row, store, row_id, existing: str | None) -> di
             raise library.StepError("the form rejected this row: "
                                     + "; ".join(problems), step="fill_form")
     store.event(f"{row['sku']} would be created", row_id=row_id)
+    if row.get("locations"):
+        # Named, not checked. The configurator tab does not exist until the
+        # product does, so a preview of a new combined row can say what phase 2
+        # would do and no more — implying it verified the references would be
+        # the one thing worse than saying nothing.
+        store.event(
+            f"{row['sku']} would then be configured: "
+            f"{len(row['locations'])} location(s)", row_id=row_id,
+            data={"locations": [l["name"] for l in row["locations"]],
+                  "checked": "nothing yet — the product does not exist"})
     return tiers
+
+
+def _store_attribute_names(page, store) -> set[str] | None:
+    """What the store defines under Catalog > Attributes > Product attributes.
+
+    None means "could not be read", NOT "the store has none", and the caller
+    skips the check rather than refusing every row over it. That asymmetry is
+    the whole safety property: a broken selector here costs the early warning
+    and leaves the run exactly as it behaved before this check existed, whereas
+    trusting an empty read would refuse a batch the admin would have accepted.
+
+    Read once per run. The list changes when a human edits it, which does not
+    happen mid-run, and re-reading it per row would add a page load to every
+    product to answer a question whose answer cannot have moved.
+    """
+    try:
+        names = ProductAttributesPage(page).names()
+    except Exception as exc:
+        log.warning("could not read the store's product attributes: %s", exc)
+        store.event("could not read the store's product attribute list — "
+                    "attribute names will be checked as each product is "
+                    "configured instead",
+                    level="warn", data={"error": str(exc)})
+        return None
+    store.event(f"store defines {len(names)} product attribute(s)",
+                data={"attributes": sorted(names)})
+    return names
+
+
+def _refuse_unknown_attributes(row: dict, known: set[str] | None) -> None:
+    """Stop a row whose attributes this store cannot offer, before it is made.
+
+    Raised BEFORE the SKU lookup, so a doomed row costs no page loads and, more
+    to the point, leaves nothing behind: add_attribute fails at the dropdown,
+    and by then the product exists and has been saved.
+
+    A row with no attributes (a configurator row, a product that is only a
+    specification) has nothing to check and passes straight through.
+    """
+    if known is None:
+        return
+    unknown = preflight.unknown_attributes(
+        [attribute["name"] for attribute in attributes_of(row)], known)
+    if unknown:
+        raise preflight.UnknownAttribute(preflight.refusal(unknown, known),
+                                         step="attributes")
 
 
 def run_batch(page, rows, *, base_url: str, email: str, password: str,
@@ -668,6 +756,9 @@ def run_batch(page, rows, *, base_url: str, email: str, password: str,
     store.event("signed in", data={"base_url": base_url})
 
     products = ManageProductsPage(page)
+    # Once, up front: the names this store can actually map. See
+    # _refuse_unknown_attributes for why it is worth a page load.
+    known_attributes = _store_attribute_names(page, store)
     owned = store.owned_skus(base_url) | _local_ledger_skus()
     results: list[dict] = []
     created = 0
@@ -685,6 +776,8 @@ def run_batch(page, rows, *, base_url: str, email: str, password: str,
         made: tuple[str, str | None] | None = None
 
         try:
+            _refuse_unknown_attributes(row, known_attributes)
+
             existing = _retrying(store, row_id, "lookup",
                                  lambda: products.find_by_sku(sku))
 
@@ -744,12 +837,19 @@ def run_batch(page, rows, *, base_url: str, email: str, password: str,
                           lambda: product.add_specification(row["spec_value"]))
 
             tiers = _configure_attributes(page, products, product, row, store, row_id)
+            configured = _configure_combined_areas(
+                page, products, row, store, row_id)
 
             url = products.find_by_sku(sku) or page.url
             store.row_finished(row_id, status=outcome, product_url=url,
                                product_id=product.product_id, colour_tiers=tiers)
-            results.append({"sku": sku, "error": None, "url": url,
-                            "status": "Added" if outcome == "added" else "Added"})
+            result = {"sku": sku, "error": None, "url": url, "status": "Added"}
+            if configured is not None:
+                # A combined row did both phases, and the report should say so
+                # rather than reading as a plain product add.
+                result["status"] = "Added + Configured"
+                result["detail"] = configured
+            results.append(result)
 
         except Exception as exc:
             classified = classify(exc)

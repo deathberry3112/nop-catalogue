@@ -126,6 +126,11 @@ def classify(exc: BaseException | str) -> Classified:
             return Classified(ErrorClass.DATA_COLOUR, message)
         if name == "ConfigError":
             return Classified(ErrorClass.DATA_INVALID, message)
+        # By type, not by text: the message quotes the store's own attribute
+        # names, so one called "Colour" would match the DATA_COLOUR pattern
+        # below and be filed as an unresolvable colour.
+        if name == "UnknownAttribute":
+            return Classified(ErrorClass.DATA_INVALID, message)
         if name in {"TimeoutError", "PlaywrightTimeoutError"}:
             return Classified(ErrorClass.TRANSIENT_NET, message)
 
