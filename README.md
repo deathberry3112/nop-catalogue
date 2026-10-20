@@ -25,9 +25,39 @@ colours, sizes and combinations counted and checked before anything is created.
 
 ![Parsed workbook preview](docs/screenshots/preview-light.png)
 
+**Runs** — every run, live or finished, committed or preview only.
+
+![Run list](docs/screenshots/runs-list.png)
+
+**A run in progress** — products fill in as they finish, with an estimate of
+the time remaining.
+
+![Live run](docs/screenshots/run-live.png)
+
+**A finished run** — failures are grouped by cause, a half-configured product
+is called out, and each product's activity expands into the exact steps taken
+in the admin.
+
+![Finished run with a failure](docs/screenshots/run-failure.png)
+
+**A preview run** — signs in and fills each form without saving anything.
+
+![Preview run](docs/screenshots/run-preview.png)
+
+**Deleting what a run created** — products the run left unfinished are
+preselected; fully configured ones must be ticked on purpose, products the run
+did not create are left alone, and typing `DELETE` arms the button.
+
+![Delete dialog](docs/screenshots/delete-armed.png)
+
+![Rollback report](docs/screenshots/delete-result.png)
+
 **Dark theme**
 
 ![Parsed workbook preview, dark theme](docs/screenshots/preview-dark.png)
+
+The runs above are demo data loaded straight into the run list — no real store
+or products were touched to take them.
 
 ## The workbook
 
