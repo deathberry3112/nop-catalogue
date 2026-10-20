@@ -11,6 +11,24 @@ right child SKU on each combination.
                                  +-> run store            +-> report.xlsx
                                      (Postgres)               (re-uploadable)
 
+## Screenshots
+
+The app running locally (`python -m app.web.server`), with a demo workbook of
+made-up products.
+
+**Upload** — drop a workbook to start.
+
+![Upload screen](docs/screenshots/upload.png)
+
+**Preview** — every product the workbook describes, grouped by SKU, with its
+colours, sizes and combinations counted and checked before anything is created.
+
+![Parsed workbook preview](docs/screenshots/preview-light.png)
+
+**Dark theme**
+
+![Parsed workbook preview, dark theme](docs/screenshots/preview-dark.png)
+
 ## The workbook
 
 **One line is one variant.** A line carries one colour, one size and the child
